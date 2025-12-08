@@ -58,6 +58,7 @@ def main(args):
             plastic_weights = plastic_weights.detach()
 
         batch_items = generate_batch_items(num_items, item_size, batch_size)
+
         trials, correct_choices = generate_batch_trials(batch_items, num_train_trials, num_test_trials)
 
         trials = torch.tensor(trials, dtype=torch.float32).to(device)

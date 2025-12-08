@@ -46,7 +46,7 @@ class MLP(nn.Module):
         hebbian_trace = torch.tanh(hebbian_trace)*10
 
         # Update plastic weights with neuromodulator-gated Hebbian update
-        plastic_weights = plastic_weights + neuromodulator * (self.alpha * hebbian_trace)
+        plastic_weights = plastic_weights + neuromodulator * hebbian_trace
         torch.clip_(plastic_weights, min=-50.0, max=50.0)
 
         return choice, neuromodulator, value, plastic_weights, hidden

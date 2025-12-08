@@ -26,6 +26,6 @@ python main.py \
     --num_items 7 \
     --item_size 15 \
     --batch_size 32 \
-    --learning_rate 0.005 \
+    --learning_rate 0.0001 \
     --grad_clip 2.0 \
-    --num_episodes_per_reset 3
+    --num_episodes_per_reset 1
