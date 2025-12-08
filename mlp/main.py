@@ -42,7 +42,8 @@ def main(args):
     item_size = args.item_size
     batch_size = args.batch_size
 
-    input_size = (2 * item_size) + 2  # 2 additional neurons for the previous reward and choice
+    input_size = 2*item_size
+    # input_size = (2 * item_size) + 2  # 2 additional neurons for the previous reward and choice
 
     wandb.init(project="3factor", name=f"mlp_{args.hidden_size}_{args.learning_rate}")
 
@@ -79,7 +80,9 @@ def main(args):
             else:
                 prev_reward = (prev_choice_made == prev_correct).float().unsqueeze(-1) * 2 - 1  # +1 or -1
                 prev_choice = prev_choice_made.unsqueeze(-1)
-            trial_input = torch.cat([batch_trial, prev_reward, prev_choice], dim=-1)
+            
+            trial_input = batch_trial
+            # trial_input = torch.cat([batch_trial, prev_reward, prev_choice], dim=-1)
 
             choice, neuromodulator, value, plastic_weights, hidden = model(trial_input, plastic_weights, batch_correct_choice)
 
