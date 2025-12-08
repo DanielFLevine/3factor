@@ -11,12 +11,14 @@ class MLP(nn.Module):
         super(MLP, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, 1)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        self.choice = nn.Linear(hidden_size, 1)
+        self.reward_linear = nn.Linear(1, hidden_size)
         self.neuromodulator_out = nn.Linear(hidden_size, 2)
         self.alpha = nn.Parameter(.01 * (2.0 * torch.rand(hidden_size, hidden_size) - 1.0))
         self.value_out = nn.Linear(hidden_size, 1)
 
-    def forward(self, items, plastic_weights):
+    def forward(self, items, plastic_weights, reward):
         # Item shape is (batch_size, 2*item_size + 2) - includes prev_reward and prev_choice
         # Calculate the hidden state
         nonlinear_item_embeddings = torch.tanh(self.fc1(items))
@@ -33,9 +35,13 @@ class MLP(nn.Module):
         self.current_contribution_mag = current_contribution.abs().mean().item()
 
         # Calculate the neuromodulator scalar and choice
-        nm_out = torch.tanh(self.neuromodulator_out(hidden))
+        # Ensure reward is shape (batch_size, 1) for the linear layer
+        if reward.dim() == 1:
+            reward = reward.unsqueeze(-1)
+        reward_embedding = self.reward_linear(reward)
+        nm_out = torch.tanh(self.neuromodulator_out(torch.tanh(self.fc3(hidden+reward_embedding))))
         neuromodulator = (nm_out[:, 0] - nm_out[:, 1]).unsqueeze(-1).unsqueeze(-1)
-        choice = torch.sigmoid(self.fc3(hidden))
+        choice = torch.sigmoid(self.choice(hidden))
 
         # Calculate the value for RL
         value = self.value_out(hidden)

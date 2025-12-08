@@ -81,7 +81,7 @@ def main(args):
                 prev_choice = prev_choice_made.unsqueeze(-1)
             trial_input = torch.cat([batch_trial, prev_reward, prev_choice], dim=-1)
 
-            choice, neuromodulator, value, plastic_weights, hidden = model(trial_input, plastic_weights)
+            choice, neuromodulator, value, plastic_weights, hidden = model(trial_input, plastic_weights, batch_correct_choice)
 
             if torch.isnan(choice).any() or (choice < 0).any() or (choice > 1).any():
                 print(f"Trial {trial}: choice has invalid values - min={choice.min()}, max={choice.max()}, nan={torch.isnan(choice).sum()}")
