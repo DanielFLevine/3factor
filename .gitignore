@@ -1,0 +1,10 @@
+*/runs*
+*/wandb*
+*/logs*
+metati/*.dat
+metati/*.data
+metati/meta_ti_paper.pdf
+metati/scratch.ipynb
+scratch.ipynb
+*/__pycache__
+metati/tAE*.txt
