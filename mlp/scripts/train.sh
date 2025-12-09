@@ -28,4 +28,10 @@ python main.py \
     --batch_size 32 \
     --learning_rate 0.0001 \
     --grad_clip 2.0 \
-    --num_episodes_per_reset 1
+    --num_episodes_per_reset 1 \
+    --item_range 8 9 \
+    --repeated_items_throughout_batch \
+    --use_ll \
+    --num_trials_list_1 10 \
+    --num_trials_list_2 10 \
+    --num_trials_linking_pair 4

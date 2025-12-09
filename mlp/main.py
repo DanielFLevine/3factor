@@ -4,13 +4,15 @@ import os
 
 from tqdm import tqdm
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 import wandb
 
 from mlp import MLP
-from generate_data import generate_batch_items, generate_batch_trials
+from generate_data import generate_batch_items, generate_batch_trials_ti, generate_batch_trials_ll
+from plots import plot_pca_inputs
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -27,6 +29,12 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, required=True)
     parser.add_argument("--grad_clip", type=float, required=True)
     parser.add_argument("--num_episodes_per_reset", type=int, required=True)
+    parser.add_argument("--item_range", type=int, nargs='+')
+    parser.add_argument("--repeated_items_throughout_batch", action='store_true')
+    parser.add_argument("--num_trials_list_1", type=int, required=False)
+    parser.add_argument("--num_trials_list_2", type=int, required=False)
+    parser.add_argument("--num_trials_linking_pair", type=int, required=False)
+    parser.add_argument("--use_ll", action='store_true')
     return parser.parse_args()
 
 def main(args):
@@ -37,8 +45,12 @@ def main(args):
     num_episodes_per_reset = args.num_episodes_per_reset
     num_train_trials = args.num_train_trials
     num_test_trials = args.num_test_trials
+    if args.use_ll:
+        assert args.num_trials_list_1 is not None
+        assert args.num_trials_list_2 is not None
+        assert args.num_trials_linking_pair is not None
+        num_train_trials = args.num_trials_list_1 + args.num_trials_list_2 + args.num_trials_linking_pair
 
-    num_items = args.num_items
     item_size = args.item_size
     batch_size = args.batch_size
 
@@ -53,14 +65,18 @@ def main(args):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-6)
 
     for episode in range(num_episodes):
+        num_items = np.random.randint(args.item_range[0], args.item_range[1])
         if episode % num_episodes_per_reset == 0:
             plastic_weights = torch.zeros(batch_size, args.hidden_size, args.hidden_size, dtype=torch.float32, requires_grad=False).to(device)
         else:
             plastic_weights = plastic_weights.detach()
 
-        batch_items = generate_batch_items(num_items, item_size, batch_size)
+        batch_items = generate_batch_items(num_items, item_size, batch_size, repeated_items_throughout_batch=args.repeated_items_throughout_batch)
 
-        trials, correct_choices = generate_batch_trials(batch_items, num_train_trials, num_test_trials)
+        if args.use_ll:
+            trials, correct_choices = generate_batch_trials_ll(batch_items, args.num_trials_list_1, args.num_trials_list_2, args.num_trials_linking_pair, num_test_trials)
+        else:
+            trials, correct_choices = generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials)
 
         trials = torch.tensor(trials, dtype=torch.float32).to(device)
         correct_choices = torch.tensor(correct_choices, dtype=torch.float32).to(device)
@@ -124,11 +140,16 @@ def main(args):
         if episode > 100:  # Burn-in period
             optimizer.step()
 
-        wandb.log({
+        wandb_log_dict = {
             "episode_loss": episode_loss,
             "train_accuracy": train_accuracy,
             "test_accuracy": test_accuracy,
-        })
+        }
+
+        if episode % 100 == 0:
+            fig = plot_pca_inputs(trials, model, episode)
+            wandb_log_dict["pca_inputs"] = wandb.Image(fig)
+        wandb.log(wandb_log_dict)
 
 
 if __name__ == "__main__":
