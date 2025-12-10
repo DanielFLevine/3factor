@@ -19,22 +19,24 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hidden_size", type=int, required=True)
-    parser.add_argument("--num_episodes", type=int, required=True)
-    parser.add_argument("--num_train_trials", type=int, required=True)
-    parser.add_argument("--num_test_trials", type=int, required=True)
-    parser.add_argument("--num_items", type=int, required=True)
-    parser.add_argument("--item_size", type=int, required=True)
-    parser.add_argument("--batch_size", type=int, required=True)
-    parser.add_argument("--learning_rate", type=float, required=True)
-    parser.add_argument("--grad_clip", type=float, required=True)
-    parser.add_argument("--num_episodes_per_reset", type=int, required=True)
-    parser.add_argument("--item_range", type=int, nargs='+')
-    parser.add_argument("--repeated_items_throughout_batch", action='store_true')
-    parser.add_argument("--num_trials_list_1", type=int, required=False)
-    parser.add_argument("--num_trials_list_2", type=int, required=False)
-    parser.add_argument("--num_trials_linking_pair", type=int, required=False)
-    parser.add_argument("--use_ll", action='store_true')
+    parser.add_argument("--hidden_size", type=int, default=200, required=False, help="Size of hidden dimension")
+    parser.add_argument("--num_episodes", type=int, default=30000, required=False, help="Number of episodes to train for")
+    parser.add_argument("--num_train_trials", type=int, default=64, required=False, help="Number of training trials per episode for transitive inference task")
+    parser.add_argument("--num_test_trials", type=int, default=32, required=False, help="Number of test trials per episode for transitive inference task")
+    parser.add_argument("--num_items", type=int, default=7, required=False, help="Number of items in transitive inference task")
+    parser.add_argument("--item_size", type=int, default=32, required=False, help="Dimensionality of each item")
+    parser.add_argument("--batch_size", type=int, default=32, required=False, help="Batch size or number of synchronous agents in each episode. Taken from A2C algorithm even though we don't use the policy loss")
+    parser.add_argument("--learning_rate", type=float, default=0.0001, required=False, help="Learning rate for the optimizer/outer loop training")
+    parser.add_argument("--grad_clip", type=float, default=2.0, required=False, help="Gradient clipping for the optimizer/outer loop training")
+    parser.add_argument("--num_episodes_per_reset", type=int, default=1, required=False, help="Number of episodes per reset of plastic weights")
+    parser.add_argument("--item_range", type=int, nargs='+', default=[4, 9], required=False, help="Range of number of items in each episode")
+    parser.add_argument("--change_items_throughout_batch", action='store_true', required=False, help="Each agent in an episode sees a different set of item representations")
+    parser.add_argument("--num_trials_list_1", type=int, required=False, help="Number of trials in list 1 for list-linking task")
+    parser.add_argument("--num_trials_list_2", type=int, required=False, help="Number of trials in list 2 for list-linking task")
+    parser.add_argument("--num_trials_linking_pair", type=int, required=False, help="Number of trials in linking pair for list-linking task")
+    parser.add_argument("--use_ll", action='store_true', required=False, help="Perform list-linking instead of transitive inference task")
+    parser.add_argument("--extra_layers", type=int, default=0, required=False, help="Number of extra hidden layers prior to final hidden layer that combines with plastic weights")
+    parser.add_argument("--burn_in_period", type=int, default=100, required=False, help="Number of episodes to burn in for before training")
     return parser.parse_args()
 
 def main(args):
@@ -55,7 +57,6 @@ def main(args):
     batch_size = args.batch_size
 
     input_size = 2*item_size
-    # input_size = (2 * item_size) + 2  # 2 additional neurons for the previous reward and choice
 
     wandb.init(project="3factor", name=f"mlp_{args.hidden_size}_{args.learning_rate}")
 
@@ -71,7 +72,7 @@ def main(args):
         else:
             plastic_weights = plastic_weights.detach()
 
-        batch_items = generate_batch_items(num_items, item_size, batch_size, repeated_items_throughout_batch=args.repeated_items_throughout_batch)
+        batch_items = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=args.change_items_throughout_batch)
 
         if args.use_ll:
             trials, correct_choices = generate_batch_trials_ll(batch_items, args.num_trials_list_1, args.num_trials_list_2, args.num_trials_linking_pair, num_test_trials)
@@ -84,21 +85,12 @@ def main(args):
         episode_loss = torch.tensor(0.0, dtype=torch.float32).to(device)
         correct_train_choices = 0
         correct_test_choices = 0
-        prev_choice_made = None
-        prev_correct = None
 
         for trial in range(num_train_trials + num_test_trials):
             batch_trial = trials[:, trial, :]
             batch_correct_choice = correct_choices[:, trial]
-            if trial == 0:
-                prev_reward = torch.zeros(batch_size, 1, device=device)
-                prev_choice = torch.zeros(batch_size, 1, device=device)
-            else:
-                prev_reward = (prev_choice_made == prev_correct).float().unsqueeze(-1) * 2 - 1  # +1 or -1
-                prev_choice = prev_choice_made.unsqueeze(-1)
             
             trial_input = batch_trial
-            # trial_input = torch.cat([batch_trial, prev_reward, prev_choice], dim=-1)
 
             choice, neuromodulator, value, plastic_weights, hidden = model(trial_input, plastic_weights, batch_correct_choice)
 
@@ -137,7 +129,7 @@ def main(args):
 
         episode_loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        if episode > 100:  # Burn-in period
+        if episode > args.burn_in_period:
             optimizer.step()
 
         wandb_log_dict = {

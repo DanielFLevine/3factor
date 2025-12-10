@@ -19,19 +19,16 @@ conda activate 3factor
 cd /gpfs/radev/home/dfl32/project/3factor/mlp
 
 python main.py \
-    --hidden_size 200 \
+    --hidden_size 512 \
     --num_episodes 100000 \
-    --num_train_trials 20 \
-    --num_test_trials 10 \
+    --num_train_trials 64 \
+    --num_test_trials 32 \
     --num_items 7 \
-    --item_size 15 \
+    --item_size 32 \
     --batch_size 32 \
     --learning_rate 0.0001 \
     --grad_clip 2.0 \
     --num_episodes_per_reset 1 \
-    --item_range 8 9 \
-    --repeated_items_throughout_batch \
-    --use_ll \
-    --num_trials_list_1 10 \
-    --num_trials_list_2 10 \
-    --num_trials_linking_pair 4
+    --item_range 4 32 \
+    --burn_in_period 100 \
+    --extra_layers 1 \

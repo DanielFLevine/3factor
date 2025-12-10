@@ -5,7 +5,7 @@ import numpy as np
 def plot_pca_inputs(batch_trials, model, episode):
     # batch_trials shape batch_size x num_trials x 2*item_size
     model.eval()
-    batch_trial_embeddings = model.fc1(batch_trials) # shape batch_size x num_trials x hidden_size
+    batch_trial_embeddings = model.embedding_layer(batch_trials) # shape batch_size x num_trials x hidden_size
     model.train()
     batch_trial_embeddings = batch_trial_embeddings.detach().cpu().numpy()
 

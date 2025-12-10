@@ -21,11 +21,11 @@ def generate_items(num_items, item_size):
         items.append(candidate)
     return np.array(items) # Return a 2D array of shape (num_items, item_size)
 
-def generate_batch_items(num_items, item_size, batch_size, repeated_items_throughout_batch=False):
+def generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=False):
     # Apply generate_items to each batch index. Each batch index corresponds to a different agent running in parallel.
     batch_items = []
     for _ in range(batch_size):
-        if repeated_items_throughout_batch:
+        if not change_items_throughout_batch:
             batch_items = [generate_items(num_items, item_size)] * batch_size
         else:
             batch_items.append(generate_items(num_items, item_size))
