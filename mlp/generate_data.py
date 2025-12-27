@@ -42,7 +42,16 @@ def generate_trial(items, is_test=False):
     item_1 = items[high_item_index]
     item_2 = items[low_item_index]
     item_pair, choice = generate_pair(item_1, item_2)
-    return item_pair, choice
+    return item_pair, choice, [high_item_index, low_item_index]
+
+def generate_trial_arbitrary(items):
+    num_items = items.shape[0]
+    high_item_index = np.random.randint(0, num_items-1)
+    low_item_index = np.random.randint(high_item_index+1, num_items)
+    item_1 = items[high_item_index]
+    item_2 = items[low_item_index]
+    item_pair, choice = generate_pair(item_1, item_2)
+    return item_pair, choice, [high_item_index, low_item_index]
 
 def generate_cross_list_trial(list_1_items, list_2_items):
     num_items_1 = list_1_items.shape[0]
@@ -59,58 +68,81 @@ def generate_cross_list_trial(list_1_items, list_2_items):
     item_1 = list_1_items[high_item_index]
     item_2 = list_2_items[low_item_index]
     item_pair, choice = generate_pair(item_1, item_2)
-    return item_pair, choice
+    return item_pair, choice, [high_item_index, low_item_index]
 
-def generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials):
+def generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials, arbitrary=False, mass_presentation=0):
     batch_size = batch_items.shape[0]
     trials = []
     correct_choices = []
+    pair_indices = []
     for batch_index in range(batch_size):
         batch_trials = []
         batch_correct_choices = []
+        batch_pair_indices = []
         for i in range(num_train_trials+num_test_trials):
             if i < num_train_trials:
                 is_test = False
             else:
                 is_test = True
-            item_pair, choice = generate_trial(batch_items[batch_index], is_test)
+            if is_test and arbitrary: # Both adjacent and non-adjacent pairs can appear in test trials
+                item_pair, choice, trial_pair_indices = generate_trial_arbitrary(batch_items[batch_index])
+            else: # Only non-adjacent pairs can appear in test trials
+                item_pair, choice, trial_pair_indices = generate_trial(batch_items[batch_index], is_test)
             batch_trials.append(item_pair)
             batch_correct_choices.append(choice)
+            batch_pair_indices.append(trial_pair_indices)
+            if mass_presentation > 0 and i == num_train_trials-1:
+                for _ in range(mass_presentation):
+                    batch_trials.append(item_pair)
+                    batch_correct_choices.append(choice)
+                    batch_pair_indices.append(trial_pair_indices)
         trials.append(np.array(batch_trials))
         correct_choices.append(np.array(batch_correct_choices))
-    return np.array(trials), np.array(correct_choices) # Return a 3D array of shape (batch_size, num_train_trials+num_test_trials, 2*item_size) and a 2D array of shape (batch_size, num_train_trials+num_test_trials)
+        pair_indices.append(np.array(batch_pair_indices))
+    trials_np = np.array(trials) # 3D array of shape (batch_size, num_train_trials+num_test_trials, 2*item_size)
+    correct_choices_np = np.array(correct_choices) #2D array of shape (batch_size, num_train_trials+num_test_trials)
+    pair_indices_np = np.array(pair_indices) # 3D array of shape (batch_size, num_train_trials+num_test_trials, 2)
+
+    return trials_np, correct_choices_np, pair_indices_np
 
 def generate_batch_trials_ll(batch_items, num_trials_list_1, num_trials_list_2, num_trials_linking_pair, num_test_trials):
     batch_size = batch_items.shape[0]
     num_items = batch_items.shape[1]
     trials = []
     correct_choices = []
+    pair_indices = []
     batch_items_list_1 = batch_items[:, :num_items//2]
     batch_items_list_2 = batch_items[:, num_items//2:]
     batch_items_linking_pair = batch_items[:, num_items//2:(num_items//2)+2]
     for batch_index in range(batch_size):
         batch_trials = []
         batch_correct_choices = []
+        batch_pair_indices = []
         is_test=False
         for i in range(num_trials_list_1):
-            item_pair, choice = generate_trial(batch_items_list_1[batch_index], is_test)
+            item_pair, choice, trial_pair_indices = generate_trial(batch_items_list_1[batch_index], is_test)
             batch_trials.append(item_pair)
             batch_correct_choices.append(choice)
+            batch_pair_indices.append(trial_pair_indices)
         for i in range(num_trials_list_2):
-            item_pair, choice = generate_trial(batch_items_list_2[batch_index], is_test)
+            item_pair, choice, trial_pair_indices = generate_trial(batch_items_list_2[batch_index], is_test)
             batch_trials.append(item_pair)
             batch_correct_choices.append(choice)
+            batch_pair_indices.append(trial_pair_indices)
         for i in range(num_trials_linking_pair):
-            item_pair, choice = generate_trial(batch_items_linking_pair[batch_index], is_test)
+            item_pair, choice, trial_pair_indices = generate_trial(batch_items_linking_pair[batch_index], is_test)
             batch_trials.append(item_pair)
             batch_correct_choices.append(choice)
+            batch_pair_indices.append(trial_pair_indices)
         for i in range(num_test_trials):
-            item_pair, choice = generate_cross_list_trial(batch_items_list_1[batch_index], batch_items_list_2[batch_index])
+            item_pair, choice, trial_pair_indices = generate_cross_list_trial(batch_items_list_1[batch_index], batch_items_list_2[batch_index])
             batch_trials.append(item_pair)
             batch_correct_choices.append(choice)
+            batch_pair_indices.append(trial_pair_indices)
         trials.append(np.array(batch_trials))
         correct_choices.append(np.array(batch_correct_choices))
-    return np.array(trials), np.array(correct_choices) # Return a 3D array of shape (batch_size, num_train_trials+num_test_trials, 2*item_size) and a 2D array of shape (batch_size, num_train_trials+num_test_trials)
+        pair_indices.append(np.array(batch_pair_indices))
+    return np.array(trials), np.array(correct_choices), np.array(pair_indices) # Return a 3D array of shape (batch_size, num_train_trials+num_test_trials, 2*item_size) and a 2D array of shape (batch_size, num_train_trials+num_test_trials)
 
 def generate_pair(item_1, item_2):
     swap = np.random.randint(0, 2)

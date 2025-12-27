@@ -1,7 +1,9 @@
 import argparse
 import logging
 import os
-
+import pickle
+from pathlib import Path
+from typing import Optional
 from tqdm import tqdm
 
 import numpy as np
@@ -12,34 +14,53 @@ import wandb
 
 from mlp import MLP
 from generate_data import generate_batch_items, generate_batch_trials_ti, generate_batch_trials_ll
-from plots import plot_pca_inputs
+from plots import plot_pca_inputs, symbolic_distance_plot
+from eval import update_symbolic_distance_bookkeeping, more_items_generalization_test, mass_presentation_test
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--output_dir", type=str, default="./output", required=False, help="Output directory for saving results")
+
+    # Model args
     parser.add_argument("--hidden_size", type=int, default=200, required=False, help="Size of hidden dimension")
+    parser.add_argument("--extra_layers", type=int, default=0, required=False, help="Number of extra hidden layers prior to final hidden layer that combines with plastic weights")
+    parser.add_argument("--plastic_weight_clip", type=Optional[float], default=None, required=False, help="Clip plastic weights to be within [-plastic_weight_clip, plastic_weight_clip]")
+    parser.add_argument("--delay_steps", type=int, default=0, required=False, help="Number of delay steps at the end of trial for an additional plastic weight update")
+
+    # Optimizer args
+    parser.add_argument("--learning_rate", type=float, default=0.0001, required=False, help="Learning rate for the optimizer/outer loop training")
+    parser.add_argument("--grad_clip", type=float, default=2.0, required=False, help="Gradient clipping for the optimizer/outer loop training")
+    parser.add_argument("--nonadj_loss_multiplier", type=float, default=1.0, required=False, help="Multiplier for non-adjacent loss in the optimizer/outer loop training")
+    
+    # Task args
     parser.add_argument("--num_episodes", type=int, default=30000, required=False, help="Number of episodes to train for")
     parser.add_argument("--num_train_trials", type=int, default=64, required=False, help="Number of training trials per episode for transitive inference task")
     parser.add_argument("--num_test_trials", type=int, default=32, required=False, help="Number of test trials per episode for transitive inference task")
     parser.add_argument("--num_items", type=int, default=7, required=False, help="Number of items in transitive inference task")
     parser.add_argument("--item_size", type=int, default=32, required=False, help="Dimensionality of each item")
     parser.add_argument("--batch_size", type=int, default=32, required=False, help="Batch size or number of synchronous agents in each episode. Taken from A2C algorithm even though we don't use the policy loss")
-    parser.add_argument("--learning_rate", type=float, default=0.0001, required=False, help="Learning rate for the optimizer/outer loop training")
-    parser.add_argument("--grad_clip", type=float, default=2.0, required=False, help="Gradient clipping for the optimizer/outer loop training")
     parser.add_argument("--num_episodes_per_reset", type=int, default=1, required=False, help="Number of episodes per reset of plastic weights")
     parser.add_argument("--item_range", type=int, nargs='+', default=[4, 9], required=False, help="Range of number of items in each episode")
+    parser.add_argument("--arbitrary", action='store_true', required=False, help="Use both adjacent and non-adjacent pairs at test time")
     parser.add_argument("--change_items_throughout_batch", action='store_true', required=False, help="Each agent in an episode sees a different set of item representations")
+    parser.add_argument("--additional_items", type=int, default=10, required=False, help="Number of additional items to test generalization on")
+    
+    # List-linking args
     parser.add_argument("--num_trials_list_1", type=int, required=False, help="Number of trials in list 1 for list-linking task")
     parser.add_argument("--num_trials_list_2", type=int, required=False, help="Number of trials in list 2 for list-linking task")
     parser.add_argument("--num_trials_linking_pair", type=int, required=False, help="Number of trials in linking pair for list-linking task")
     parser.add_argument("--use_ll", action='store_true', required=False, help="Perform list-linking instead of transitive inference task")
-    parser.add_argument("--extra_layers", type=int, default=0, required=False, help="Number of extra hidden layers prior to final hidden layer that combines with plastic weights")
+    
+    # Other args
     parser.add_argument("--burn_in_period", type=int, default=100, required=False, help="Number of episodes to burn in for before training")
+    parser.add_argument("--plot_symbolic_distance", action='store_true', required=False, help="Plot symbolic distance")
     return parser.parse_args()
 
 def main(args):
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     logger.info(f"args: {args}")
@@ -47,6 +68,7 @@ def main(args):
     num_episodes_per_reset = args.num_episodes_per_reset
     num_train_trials = args.num_train_trials
     num_test_trials = args.num_test_trials
+    assert num_train_trials + num_test_trials > 0
     if args.use_ll:
         assert args.num_trials_list_1 is not None
         assert args.num_trials_list_2 is not None
@@ -60,10 +82,32 @@ def main(args):
 
     wandb.init(project="3factor", name=f"mlp_{args.hidden_size}_{args.learning_rate}")
 
-    model = MLP(input_size, args.hidden_size, args.batch_size).to(device)
+    model = MLP(
+        input_size=input_size,
+        hidden_size=args.hidden_size,
+        batch_size=args.batch_size,
+        plastic_weight_clip=args.plastic_weight_clip,
+        delay_steps=args.delay_steps
+    ).to(device)
+
     wandb.watch(model, log="all", log_freq=100)
     logger.info(model)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-6)
+    
+    # This is a bookkeeping device needed to plot symbolic distances. It's a nested list that stores trial information.
+    # The outer list is indexed by batch index, and the inner list is indexed by  episode number, then finally trial number.
+    # Then the trial information is stored as a dictionary with the following keys:
+    # {
+    #     "item_1": item_1, # first item index for the trial
+    #     "item_2": item_2, # second item index for the trial
+    #     "reverse_presentation": reverse_presentation, # boolean if items were presented in reverse order
+    #     "model_output": model_output, # model output for the trial
+    #     "correct_choice": correct_choice, # correct choice for the trial
+    # }
+    # Note that some fields can be deduced from other information, but we store them explicitly for convenience.
+    # It's stored this way since it's easier to manipulate later on for plots.
+
+    symbolic_distance_bookkeeping = [[] for _ in range(batch_size)]
 
     for episode in range(num_episodes):
         num_items = np.random.randint(args.item_range[0], args.item_range[1])
@@ -75,9 +119,11 @@ def main(args):
         batch_items = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=args.change_items_throughout_batch)
 
         if args.use_ll:
-            trials, correct_choices = generate_batch_trials_ll(batch_items, args.num_trials_list_1, args.num_trials_list_2, args.num_trials_linking_pair, num_test_trials)
+            trials, correct_choices, pair_indices = generate_batch_trials_ll(batch_items, args.num_trials_list_1, args.num_trials_list_2, args.num_trials_linking_pair, num_test_trials)
         else:
-            trials, correct_choices = generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials)
+            trials, correct_choices, pair_indices = generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials, arbitrary=args.arbitrary)
+
+        nonadjacent_trials = torch.tensor(np.abs(pair_indices[:,:,0] - pair_indices[:,:,1]) > 1, dtype=torch.bool).to(device) # boolean mask for non-adjacent trials, shape (batch_size, num_trials)
 
         trials = torch.tensor(trials, dtype=torch.float32).to(device)
         correct_choices = torch.tensor(correct_choices, dtype=torch.float32).to(device)
@@ -85,10 +131,12 @@ def main(args):
         episode_loss = torch.tensor(0.0, dtype=torch.float32).to(device)
         correct_train_choices = 0
         correct_test_choices = 0
+        all_choices_sampled = []
 
         for trial in range(num_train_trials + num_test_trials):
             batch_trial = trials[:, trial, :]
             batch_correct_choice = correct_choices[:, trial]
+            batch_nonadjacent = nonadjacent_trials[:, trial]
             
             trial_input = batch_trial
 
@@ -99,17 +147,27 @@ def main(args):
                 break
 
             choice_sampled = torch.bernoulli(choice).squeeze(-1)
+            all_choices_sampled.append(choice_sampled)
             choice_prob = choice.squeeze(-1)
-            loss = F.binary_cross_entropy(choice_prob, batch_correct_choice, reduction='sum') / ((num_train_trials + num_test_trials) * batch_size)
+            nonreduced_loss = F.binary_cross_entropy(choice_prob, batch_correct_choice, reduction='none')
+            loss = nonreduced_loss * batch_nonadjacent
+            loss = loss.sum() / ((num_train_trials + num_test_trials) * batch_size)
             episode_loss += loss
 
             if trial < num_train_trials:
                 correct_train_choices += (choice_sampled == batch_correct_choice).sum().item()
             else:
                 correct_test_choices += (choice_sampled == batch_correct_choice).sum().item()
-
-            prev_correct = batch_correct_choice
-            prev_choice_made = choice_sampled
+        
+        # Stack choices: shape (num_trials, batch_size) -> transpose to (batch_size, num_trials)
+        all_choices_sampled = torch.stack(all_choices_sampled, dim=0).T.detach().cpu().numpy()
+        symbolic_distance_bookkeeping = update_symbolic_distance_bookkeeping(
+            symbolic_distance_bookkeeping,
+            pair_indices,
+            all_choices_sampled,
+            correct_choices.detach().cpu().numpy(),
+            episode
+        )
 
         # l2_plastic_weights_loss = torch.mean(plastic_weights ** 2) * 1e-1
         # episode_loss += l2_plastic_weights_loss
@@ -125,22 +183,46 @@ def main(args):
             logger.info(f"Neuromodulator values: {neuromodulator}, {neuromodulator.min().item()}, {neuromodulator.max().item()}, {neuromodulator.mean().item()}")
             logger.info(f"Plastic weights: {plastic_weights.abs().mean()}, {plastic_weights.abs().min().item()}, {plastic_weights.abs().max().item()}, {plastic_weights.abs().mean().item()}")
             logger.info(f"Choice: {choice_prob}, {choice_prob.min().item()}, {choice_prob.max().item()}, {choice_prob.mean().item()}")
-            logger.info(f"Contributions - plastic: {model.plastic_contribution_mag}, current: {model.current_contribution_mag}")
 
         episode_loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         if episode > args.burn_in_period:
             optimizer.step()
 
+        # Log plastic weight distributions
+        pw_data = plastic_weights.detach().cpu().numpy().flatten()
         wandb_log_dict = {
             "episode_loss": episode_loss,
             "train_accuracy": train_accuracy,
             "test_accuracy": test_accuracy,
+            "plastic_weights/histogram": wandb.Histogram(pw_data),
+            "plastic_weights/mean_abs": float(np.mean(np.abs(pw_data))),
+            "plastic_weights/std": float(np.std(pw_data)),
+            "plastic_weights/min": float(np.min(pw_data)),
+            "plastic_weights/max": float(np.max(pw_data)),
         }
 
         if episode % 100 == 0:
             fig = plot_pca_inputs(trials, model, episode)
             wandb_log_dict["pca_inputs"] = wandb.Image(fig)
+
+            length_generalization_logging_dict, length_generalization_fig = more_items_generalization_test(args, model)
+            wandb_log_dict.update(length_generalization_logging_dict)
+            wandb_log_dict["length_generalization"] = wandb.Image(length_generalization_fig)
+
+            mass_presentation_logging_dict, mass_presentation_fig = mass_presentation_test(args, model)
+            wandb_log_dict.update(mass_presentation_logging_dict)
+            wandb_log_dict["mass_presentation"] = wandb.Image(mass_presentation_fig)
+
+            if args.plot_symbolic_distance:
+                # Save updated symbolic distance bookkeeping
+                with open(os.path.join(args.output_dir, f"symbolic_distance_bookkeeping_{wandb.run.name}_{wandb.run.id}.pkl"), "wb") as f:
+                    pickle.dump(symbolic_distance_bookkeeping, f)
+
+                if episode >= 100:
+                    max_num_items = args.item_range[1] - 1  # randint is exclusive of upper bound
+                    fig = symbolic_distance_plot(symbolic_distance_bookkeeping, 100, max_num_items, num_test_trials)
+                    wandb_log_dict["symbolic_distance_plot"] = wandb.Image(fig)
         wandb.log(wandb_log_dict)
 
 
