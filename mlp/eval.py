@@ -184,3 +184,106 @@ def mass_presentation_test(args, model):
     model.train()
     
     return mass_presentation_logging_dict, fig
+
+def new_items_old_items_test(args, model):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.eval()
+
+    num_items = args.item_range[-1] - 1
+    num_train_trials = args.num_train_trials
+    num_test_trials = args.num_test_trials
+    batch_size = args.batch_size
+    item_size = args.item_size
+
+    plastic_weights = torch.zeros(batch_size, args.hidden_size, args.hidden_size, dtype=torch.float32, requires_grad=False).to(device)
+
+    batch_items_old = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=args.change_items_throughout_batch)
+    batch_items_new = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=args.change_items_throughout_batch)
+
+    trials_old, correct_choices_old, pair_indices_old = generate_batch_trials_ti(batch_items_old, num_train_trials, num_test_trials, arbitrary=args.arbitrary, mass_presentation=0)
+    trials_old_revisited, correct_choices_old_revisited, pair_indices_old_revisited = generate_batch_trials_ti(batch_items_old, num_train_trials, num_test_trials, arbitrary=args.arbitrary, mass_presentation=0)
+    trials_new, correct_choices_new, pair_indices_new = generate_batch_trials_ti(batch_items_new, num_train_trials, num_test_trials, arbitrary=args.arbitrary, mass_presentation=0)
+
+    trials_old = torch.tensor(trials_old, dtype=torch.float32).to(device)
+    trials_new = torch.tensor(trials_new, dtype=torch.float32).to(device)
+    trials_old_test = torch.tensor(trials_old_revisited[:, num_train_trials:, :], dtype=torch.float32).to(device)
+    trials = torch.cat([trials_old, trials_new, trials_old_test], dim=1).to(device)
+
+    correct_choices_old = torch.tensor(correct_choices_old, dtype=torch.float32).to(device)
+    correct_choices_new = torch.tensor(correct_choices_new, dtype=torch.float32).to(device)
+    correct_choices_old_test = torch.tensor(correct_choices_old_revisited[:, num_train_trials:], dtype=torch.float32).to(device)
+    correct_choices = torch.cat([correct_choices_old, correct_choices_new, correct_choices_old_test], dim=-1)
+
+    correct_train_choices_old = 0
+    correct_test_choices_old = 0
+    correct_train_choices_new = 0
+    correct_test_choices_new = 0
+    correct_test_choices_old_revisited = 0
+
+    plot_accuracies = {
+        "old_train": 0.0,
+        "old_test": 0.0,
+        "new_train": 0.0,
+        "new_test": 0.0,
+        "old_revisited_test": 0.0,
+    }
+
+    accuracies_dict = {}
+
+    total_trials = 2*(num_train_trials + num_test_trials) + num_test_trials
+
+    for trial in range(total_trials):
+        batch_trial = trials[:, trial, :]
+        batch_correct_choice = correct_choices[:, trial]
+        
+        trial_input = batch_trial
+
+        with torch.inference_mode():
+            choice, neuromodulator, value, plastic_weights, hidden = model(trial_input, plastic_weights, batch_correct_choice)
+
+        if torch.isnan(choice).any() or (choice < 0).any() or (choice > 1).any():
+            print(f"Trial {trial}: choice has invalid values - min={choice.min()}, max={choice.max()}, nan={torch.isnan(choice).sum()}")
+            break
+
+        choice_sampled = torch.bernoulli(choice).squeeze(-1)
+
+        if trial < num_train_trials:
+            correct_train_choices_old += (choice_sampled == batch_correct_choice).sum().item()
+        elif trial < num_train_trials + num_test_trials:
+            correct_test_choices_old += (choice_sampled == batch_correct_choice).sum().item()
+        elif trial < 2*num_train_trials + num_test_trials:
+            correct_train_choices_new += (choice_sampled == batch_correct_choice).sum().item()
+        elif trial < 2*num_train_trials + 2*num_test_trials:
+            correct_test_choices_new += (choice_sampled == batch_correct_choice).sum().item()
+        else:
+            correct_test_choices_old_revisited += (choice_sampled == batch_correct_choice).sum().item()
+    
+    train_accuracy_old = correct_train_choices_old / (num_train_trials * batch_size)
+    test_accuracy_old = correct_test_choices_old / (num_test_trials * batch_size)
+    train_accuracy_new = correct_train_choices_new / (num_train_trials * batch_size)
+    test_accuracy_new = correct_test_choices_new / (num_test_trials * batch_size)
+    test_accuracy_old_revisited = correct_test_choices_old_revisited / (num_test_trials * batch_size)
+    plot_accuracies["old_train"] = train_accuracy_old
+    plot_accuracies["old_test"] = test_accuracy_old
+    plot_accuracies["new_train"] = train_accuracy_new
+    plot_accuracies["new_test"] = test_accuracy_new
+    plot_accuracies["old_revisited_test"] = test_accuracy_old_revisited
+
+    accuracies_dict.update({
+        "old_train": train_accuracy_old,
+        "old_test": test_accuracy_old,
+        "new_train": train_accuracy_new,
+        "new_test": test_accuracy_new,
+        "old_revisited_test": test_accuracy_old_revisited,
+    })
+
+    plt.figure(dpi=300)
+    plt.bar(list(plot_accuracies.keys()), list(plot_accuracies.values()))
+    plt.xlabel('Trial Type')
+    plt.ylabel('Accuracy')
+    plt.tight_layout()
+    fig = plt.gcf()
+    plt.close()
+    model.train()
+    
+    return accuracies_dict, fig

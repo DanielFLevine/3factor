@@ -15,7 +15,7 @@ import wandb
 from mlp import MLP
 from generate_data import generate_batch_items, generate_batch_trials_ti, generate_batch_trials_ll
 from plots import plot_pca_inputs, symbolic_distance_plot
-from eval import update_symbolic_distance_bookkeeping, more_items_generalization_test, mass_presentation_test
+from eval import update_symbolic_distance_bookkeeping, more_items_generalization_test, mass_presentation_test, new_items_old_items_test
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -213,6 +213,10 @@ def main(args):
             mass_presentation_logging_dict, mass_presentation_fig = mass_presentation_test(args, model)
             wandb_log_dict.update(mass_presentation_logging_dict)
             wandb_log_dict["mass_presentation"] = wandb.Image(mass_presentation_fig)
+
+            accuracies_dict, bar_plot_fig = new_items_old_items_test(args, model)
+            wandb_log_dict.update(accuracies_dict)
+            wandb_log_dict["new_items_old_items_test_bar_plot"] = wandb.Image(bar_plot_fig)
 
             if args.plot_symbolic_distance:
                 # Save updated symbolic distance bookkeeping
