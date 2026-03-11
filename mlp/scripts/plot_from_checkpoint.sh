@@ -26,11 +26,16 @@ export CP_2HIDDEN_MINIMAL="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs2
 export CP_2HIDDEN_ULTRAMINIMAL="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs200_lr0.0001_extralayers1_bce_greedy_scalaralpha0_1_simplenmbias_nmw2.0_nmb-1.0_frzNM_frzHT_frzInnate1_2_frzAlpha1_2_frzReadout_directreadout_linearhebb_noEmbed_linearact_onesreadout_strongAntisymInput_ninit0.1_nobias1_2_20260304_144605/checkpoint_ep14999.pt"
 export CP_0LAYER_EMBBIAS_ONESREADOUT="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs200_lr0.0001_extralayers0_bce_greedy_scalaralpha1_frzNM_frzHT_frzAlpha1_directreadout_linearhebb_linearact_onesreadout_nobias1_directNM_p0.0_n-1.0_20260306_143327/checkpoint_ep1469999.pt"
 
+export CP_0LAYER_RAPIDTI_SIMPLENM_LINEARHEBB_LINEARACT="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs200_lr0.0001_extralayers0_bce_greedy_scalaralpha1_frzNM_frzHT_linearhebb_linearact_noReadoutBias_nobias0_1_directNM_p0.0_n-1.0_20260310_144047/checkpoint_ep19999.pt"
+export CP_0LAYER_RAPIDTI_SIMPLENM_LINEARHEBB="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs200_lr0.0001_extralayers0_bce_greedy_scalaralpha1_frzNM_frzHT_linearhebb_noReadoutBias_nobias0_1_directNM_p0.0_n-1.0_20260310_144742/checkpoint_ep19999.pt"
+export CP_0LAYER_RAPIDTI="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs200_lr0.0001_extralayers0_bce_greedy_scalaralpha1_frzNM_frzHT_noReadoutBias_nobias0_1_20260310_145657/checkpoint_ep34999.pt"
+export CP_0LAYER_RAPIDTI_SINGLE_NM="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs200_lr0.0001_extralayers0_bce_greedy_scalaralpha1_frzNM_frzHT_singlenm_noReadoutBias_nobias0_1_20260310_153553/checkpoint_ep34999.pt"
+export CP_0LAYER_RAPIDTI_MASKNONADJ="/gpfs/radev/pi/dijk/dfl32/3factor/checkpoints/mlp_hs200_lr0.0001_extralayers0_bce_greedy_maskadj_frzNM_frzHT_singlenm_noReadoutBias_nobias0_1_20260310_163255/checkpoint_ep69999.pt"
 
 
 python plot_from_checkpoint.py \
-    --checkpoint $CP_0LAYER_EMBBIAS_ONESREADOUT \
-    --wandb_run_name corr_evo_ep1469999_0layer_embbias_onesreadout \
+    --checkpoint $CP_0LAYER_RAPIDTI_MASKNONADJ \
+    --wandb_run_name corr_evo_ep69999_0layer_rapidti_masknonadj \
     --num_train_trials 20 \
     --num_aggregate_episodes 10000 \
     --ll_num_trials_list_1 10 \

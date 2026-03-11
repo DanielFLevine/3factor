@@ -15,7 +15,7 @@ import wandb
 
 from mlp import MLP, create_plastic_weights, detach_plastic_weights, clone_plastic_weights, pw_batch_size, repeat_interleave_pw
 from generate_data import generate_batch_items, generate_batch_trials_ti, generate_batch_trials_ll, generate_batch_items_ai, generate_batch_trials_ai, generate_interleaved_ti_ai_batch, generate_grouped_ti_ai_batch
-from plots import plot_pca_inputs, plot_pca_frozen_by_symbolic_distance, zero_shot_symbolic_distance_plot, delta_symbolic_distance_plot, ai_heatmap_plot, plot_list_linking_analysis, plot_correlation_evolution_ti, plot_correlation_evolution_ll, plot_innate_weight_analysis, plot_pair_pca_by_choice, plot_trial_violin_by_reward, plot_neural_activity_by_pair_ti, plot_neural_activity_by_pair_ll, plot_rank_neuron_analysis_ti, plot_rank_neuron_analysis_ll, plot_linking_pair_item_correlations, plot_adjacent_pair_heatmap_ti
+from plots import plot_pca_frozen_by_symbolic_distance, zero_shot_symbolic_distance_plot, delta_symbolic_distance_plot, ai_heatmap_plot, plot_list_linking_analysis, plot_correlation_evolution_ti, plot_correlation_evolution_ll, plot_innate_weight_analysis, plot_pair_pca_by_choice, plot_trial_violin_by_reward, plot_neural_activity_by_pair_ti, plot_neural_activity_by_pair_ll, plot_rank_neuron_analysis_ti, plot_rank_neuron_analysis_ll, plot_linking_pair_item_correlations, plot_adjacent_pair_heatmap_ti
 from eval import more_items_generalization_test, mass_presentation_test, new_items_old_items_test, full_eval_ll, full_eval_ti, full_eval_ai, eval_controlled_order_ll, plastic_weight_ablation_ll, plastic_weight_ablation_ti, top_alpha_ablation, continual_learning_eval, ai_generalization_test
 from losses import compute_bce_loss, compute_a2c_loss
 
@@ -36,6 +36,7 @@ def parse_args():
     parser.add_argument("--anneal_plastic_weight_clip_step", type=float, default=None, required=False, help="Amount to increase plastic_weight_clip every --anneal_plastic_weight_clip_interval episodes. Removes clip entirely once it exceeds 1e6.")
     parser.add_argument("--anneal_plastic_weight_clip_interval", type=int, default=100, required=False, help="How often (in episodes) to increase the plastic weight clip (default 100)")
     parser.add_argument("--delay_steps", type=int, default=0, required=False, help="Number of delay steps at the end of trial for an additional plastic weight update")
+    parser.add_argument("--freeze_plastic_during_test", action="store_true", required=False, help="Skip Hebbian updates during test trials (plastic weights still contribute but are not updated)")
     parser.add_argument("--use_extra_neuromodulator", action="store_true", required=False, help="Use separate neuromodulator networks for each extra hidden layer")
     parser.add_argument("--simple_neuromodulator", action="store_true", required=False, help="Replace neuromodulator network with reward * single learnable weight")
     parser.add_argument("--simple_neuromodulator_bias", action="store_true", required=False, help="Add learnable bias to simple neuromodulator")
@@ -75,12 +76,15 @@ def parse_args():
     parser.add_argument("--strong_antisymmetric_input_init", action="store_true", required=False, help="Strong antisymmetric init: [[A,-A],[-A,A]] where A is the upper-left block")
     parser.add_argument("--normal_init_std", type=float, default=None, required=False, help="Initialize all linear layer weights with normal distribution (mean=0, std=this value). Default: PyTorch default init.")
     parser.add_argument("--no_bias_layers", type=int, nargs='*', default=[], required=False, help="Remove bias from specified layers. 0=embedding layers, 1..N=extra hidden layers, N+1=fc2. E.g. --no_bias_layers 0 1 2 removes bias from embedding and first two extra layers. 0 is ignored when --no_embedding is set.")
+    parser.add_argument("--no_readout_bias", action="store_true", required=False, help="Remove bias from the choice (readout) layer. Only applies when not using --direct_readout.")
     parser.add_argument("--innate_rank", type=int, default=None, required=False, help="Replace innate weight matrices (extra layers and fc2 if not ones_readout) with a sum of this many random outer products, controlling the rank.")
     parser.add_argument("--direct_nm", action="store_true", required=False, help="Use separate learnable scalars for positive and negative reward NM instead of a linear function of reward")
     parser.add_argument("--direct_nm_pos_init", type=float, default=0.0, required=False, help="Initial value for direct NM positive reward scalar (default: 0.0)")
     parser.add_argument("--direct_nm_neg_init", type=float, default=-1.0, required=False, help="Initial value for direct NM negative reward scalar (default: -1.0)")
     parser.add_argument("--freeze_direct_nm_pos", action="store_true", required=False, help="Freeze direct NM positive reward scalar")
     parser.add_argument("--freeze_direct_nm_neg", action="store_true", required=False, help="Freeze direct NM negative reward scalar")
+    parser.add_argument("--plastic_embedding", action="store_true", required=False, help="Add plastic weights to embedding layer (Hebbian-updated like extra layers)")
+    parser.add_argument("--disable_final_plastic", action="store_true", required=False, help="Disable plastic weights contribution and Hebbian update for the final (fc2) layer")
 
     # Optimizer args
     parser.add_argument("--learning_rate", type=float, default=0.0001, required=False, help="Learning rate for the optimizer/outer loop training")
@@ -93,6 +97,7 @@ def parse_args():
     parser.add_argument("--num_episodes", type=int, default=30000, required=False, help="Number of episodes to train for")
     parser.add_argument("--num_train_trials", type=int, default=64, required=False, help="Number of training trials per episode for transitive inference task")
     parser.add_argument("--num_test_trials", type=int, default=32, required=False, help="Number of test trials per episode for transitive inference task")
+    parser.add_argument("--exhaustive_test_pairs", action="store_true", required=False, help="Show all N*(N-1) ordered pairs exactly once at test time (overrides --num_test_trials for TI)")
     parser.add_argument("--num_items", type=int, default=7, required=False, help="Number of items in transitive inference task")
     parser.add_argument("--item_size", type=int, default=32, required=False, help="Dimensionality of each item")
     parser.add_argument("--batch_size", type=int, default=32, required=False, help="Batch size or number of synchronous agents in each episode. Taken from A2C algorithm even though we don't use the policy loss")
@@ -181,7 +186,7 @@ def main(args):
             'direct_readout', 'use_sigmoid', 'use_capped_relu', 'single_nm_unit', 'linear_hebbian',
             'no_alpha', 'no_embedding', 'linear_activation', 'ones_readout', 'antisymmetric_readout',
             'antisymmetric_input_init', 'strong_antisymmetric_input_init', 'no_bias_layers',
-            'direct_nm',
+            'direct_nm', 'plastic_embedding', 'disable_final_plastic', 'no_readout_bias',
         ]
         overridden = []
         for key in arch_keys:
@@ -282,6 +287,8 @@ def main(args):
         wandb_name += "_linearact"
     if args.ones_readout:
         wandb_name += "_onesreadout"
+    if args.no_readout_bias:
+        wandb_name += "_noReadoutBias"
     if args.antisymmetric_readout:
         wandb_name += "_antisym"
     if args.antisymmetric_input_init:
@@ -300,6 +307,14 @@ def main(args):
             wandb_name += "_frzDNMpos"
         if args.freeze_direct_nm_neg:
             wandb_name += "_frzDNMneg"
+    if args.plastic_embedding:
+        wandb_name += "_plasticEmbed"
+    if args.disable_final_plastic:
+        wandb_name += "_noFinalPlastic"
+    if args.freeze_plastic_during_test:
+        wandb_name += "_frzPlasticTest"
+    if args.exhaustive_test_pairs:
+        wandb_name += "_exhaustiveTest"
 
     wandb.init(project="3factor", name=wandb_name)
 
@@ -343,6 +358,9 @@ def main(args):
         direct_nm_neg_init=args.direct_nm_neg_init,
         freeze_direct_nm_pos=args.freeze_direct_nm_pos,
         freeze_direct_nm_neg=args.freeze_direct_nm_neg,
+        plastic_embedding=args.plastic_embedding,
+        disable_final_plastic=args.disable_final_plastic,
+        no_readout_bias=args.no_readout_bias,
     ).to(device)
     model.greedy_sampling = args.greedy_sampling
 
@@ -391,14 +409,20 @@ def main(args):
     # Freeze specified alpha layers
     if not args.no_alpha:
         for layer_num in args.freeze_alpha_layers:
-            if 1 <= layer_num <= args.extra_layers:
+            if layer_num == 0:
+                if args.plastic_embedding and hasattr(model, 'alpha_embed'):
+                    model.alpha_embed.requires_grad = False
+                    frozen_params.add("alpha_embed")
+                else:
+                    raise ValueError("Cannot freeze alpha for embedding (layer 0) unless --plastic_embedding is set.")
+            elif 1 <= layer_num <= args.extra_layers:
                 model.alpha_extra[layer_num - 1].requires_grad = False
                 frozen_params.add(f"alpha_extra.{layer_num - 1}")
             elif layer_num == args.extra_layers + 1:
                 model.alpha.requires_grad = False
                 frozen_params.add("alpha")
             else:
-                raise ValueError(f"Invalid alpha layer index {layer_num}. Valid: "
+                raise ValueError(f"Invalid alpha layer index {layer_num}. Valid: 0=embedding (if plastic_embedding), "
                                  f"1..{args.extra_layers}=alpha_extra, {args.extra_layers + 1}=alpha (final)")
 
     # Freeze readout (choice) layer weights
@@ -502,9 +526,9 @@ def main(args):
         else:
             num_items = np.random.randint(args.item_range[0], args.item_range[1])
         if episode % num_episodes_per_reset == 0:
-            plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, args.multi_neuromodulator, device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=model.first_plastic_input_size)
+            plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, args.multi_neuromodulator, device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=model.first_plastic_input_size, plastic_embedding=args.plastic_embedding, input_size=input_size)
         else:
-            plastic_weights, extra_plastic_weights = detach_plastic_weights(plastic_weights, extra_plastic_weights, args.multi_neuromodulator)
+            plastic_weights, extra_plastic_weights, embed_pw = detach_plastic_weights(plastic_weights, extra_plastic_weights, args.multi_neuromodulator, embed_pw=embed_pw)
 
         if is_interleaved_episode:
             # Generate interleaved TI+AI episode
@@ -614,11 +638,13 @@ def main(args):
             num_train_trials = args.num_train_trials
             num_test_trials_final = args.num_test_trials
             batch_items = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=args.change_items_throughout_batch)
-            if args.random_long_episode:
+            if args.exhaustive_test_pairs:
+                num_test_trials_final = num_items * (num_items - 1)
+            elif args.random_long_episode:
                 random_val = np.random.random()
                 if random_val < 0.05:
                     num_test_trials_final = args.num_test_trials * 10
-            trials, correct_choices, pair_indices, num_train_trials = generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials_final, arbitrary=args.arbitrary)
+            trials, correct_choices, pair_indices, num_train_trials = generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials_final, arbitrary=args.arbitrary, exhaustive_test=args.exhaustive_test_pairs)
             nonadjacent_trials = torch.tensor(np.abs(pair_indices[:,:,0] - pair_indices[:,:,1]) > 1, dtype=torch.bool).to(device)
 
         # Set task_labels to None for non-interleaved/non-joint modes
@@ -657,13 +683,15 @@ def main(args):
 
             trial_input = batch_trial
 
-            output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights)
+            freeze_plastic = args.freeze_plastic_during_test and trial >= num_train_trials
+            output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw, freeze_plastic=freeze_plastic)
             plastic_weights = output.plastic_weights
             extra_plastic_weights = output.extra_plastic_weights
+            embed_pw = output.embed_plastic_weights
 
             # Truncated BPTT: detach plastic weights every K trials
             if args.tbptt_steps > 0 and (trial + 1) % args.tbptt_steps == 0:
-                plastic_weights, extra_plastic_weights = detach_plastic_weights(plastic_weights, extra_plastic_weights, args.multi_neuromodulator)
+                plastic_weights, extra_plastic_weights, embed_pw = detach_plastic_weights(plastic_weights, extra_plastic_weights, args.multi_neuromodulator, embed_pw=embed_pw)
 
             if torch.isnan(output.choice).any() or (output.choice < 0).any() or (output.choice > 1).any():
                 print(f"Trial {trial}: choice has invalid values - min={output.choice.min()}, max={output.choice.max()}, nan={torch.isnan(output.choice).sum()}")
@@ -818,6 +846,20 @@ def main(args):
                     if model.alpha_extra[i].grad is not None:
                         wandb_log_dict[f"scalar_alpha/extra_layer{i+1}_grad"] = model.alpha_extra[i].grad.item()
 
+        # Log embedding plastic weight stats
+        if args.plastic_embedding and embed_pw is not None:
+            embed_pw_data = embed_pw.detach().cpu().numpy().flatten()
+            wandb_log_dict.update({
+                "embed_plastic_weights/mean_abs": float(np.mean(np.abs(embed_pw_data))),
+                "embed_plastic_weights/std": float(np.std(embed_pw_data)),
+                "embed_plastic_weights/max": float(np.max(embed_pw_data)),
+            })
+            if not args.no_alpha and hasattr(model, 'alpha_embed'):
+                if model.alpha_embed.dim() == 0:
+                    wandb_log_dict["scalar_alpha/embed_value"] = model.alpha_embed.item()
+                    if model.alpha_embed.grad is not None:
+                        wandb_log_dict["scalar_alpha/embed_grad"] = model.alpha_embed.grad.item()
+
         # Log task-specific metrics for associative_inference_ti mode
         if args.associative_inference_ti and not is_interleaved_episode:
             if is_ai_episode:
@@ -969,10 +1011,6 @@ def main(args):
                 wandb_log_dict["multipliers/direct_nm_pos_grad"] = model.direct_nm_pos.grad.item()
             if model.direct_nm_neg.grad is not None:
                 wandb_log_dict["multipliers/direct_nm_neg_grad"] = model.direct_nm_neg.grad.item()
-
-        if episode % 100 == 0:
-            fig = plot_pca_inputs(trials, model, episode)
-            wandb_log_dict["pca_inputs"] = wandb.Image(fig)
 
         # Full evaluation
         if episode % args.full_eval_interval == 0 and episode > 0:

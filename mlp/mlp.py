@@ -20,6 +20,7 @@ class MLPOutput:
     hidden: torch.Tensor
     extra_plastic_weights: List[torch.Tensor]
     embeddings: List[torch.Tensor]
+    embed_plastic_weights: torch.Tensor = None
     reward: torch.Tensor = None  # Actual reward: +1 if correct, -1 if incorrect
 
 class MLP(nn.Module):
@@ -64,8 +65,13 @@ class MLP(nn.Module):
         direct_nm_neg_init=-1.0,
         freeze_direct_nm_pos=False,
         freeze_direct_nm_neg=False,
+        plastic_embedding=False,
+        disable_final_plastic=False,
+        no_readout_bias=False,
     ):
         super(MLP, self).__init__()
+        self.disable_final_plastic = disable_final_plastic
+        self.plastic_embedding = plastic_embedding
         self.direct_readout = direct_readout
         self.ones_readout = ones_readout
         self.strong_antisymmetric_input_init = strong_antisymmetric_input_init
@@ -132,7 +138,7 @@ class MLP(nn.Module):
                 self.fc2.weight.requires_grad = False
         else:
             self.fc2 = nn.Linear(self.fc2_input_size, hidden_size, bias=(extra_layers + 1) not in self.no_bias_layers)
-            self.choice = nn.Linear(hidden_size, 1, bias=not ones_readout)
+            self.choice = nn.Linear(hidden_size, 1, bias=not ones_readout and not no_readout_bias)
             if ones_readout:
                 nn.init.ones_(self.choice.weight)
                 if antisymmetric_readout:
@@ -182,6 +188,27 @@ class MLP(nn.Module):
             if use_extra_neuromodulator:
                 self.direct_nm_pos_extra = nn.ParameterList([nn.Parameter(torch.tensor(direct_nm_pos_init), requires_grad=not freeze_direct_nm_pos) for _ in range(extra_layers)])
                 self.direct_nm_neg_extra = nn.ParameterList([nn.Parameter(torch.tensor(direct_nm_neg_init), requires_grad=not freeze_direct_nm_neg) for _ in range(extra_layers)])
+
+        # Plastic embedding parameters
+        if plastic_embedding and not no_embedding:
+            if not no_alpha:
+                if 0 in self.scalar_alpha_layers:
+                    self.alpha_embed = nn.Parameter(torch.tensor(0.01))
+                else:
+                    self.alpha_embed = nn.Parameter(.01 * (2.0 * torch.rand(hidden_size, input_size) - 1.0))
+            self.neuromodulator_multiplier_embed = torch.nn.Parameter((1.0 * torch.ones(1)), requires_grad=not freeze_neuromodulator_multiplier)
+            self.hebbian_trace_multiplier_embed = torch.nn.Parameter((1.0 * torch.ones(1)), requires_grad=not freeze_hebbian_trace_multiplier)
+            self.hidden_to_reward_embed = nn.Linear(hidden_size, hidden_size)
+            if simple_neuromodulator:
+                self.simple_nm_weight_embed = nn.Parameter(torch.tensor(simple_neuromodulator_init_weight))
+                if simple_neuromodulator_bias:
+                    self.simple_nm_bias_embed = nn.Parameter(torch.tensor(simple_neuromodulator_init_bias))
+            if direct_nm:
+                self.direct_nm_pos_embed = nn.Parameter(torch.tensor(direct_nm_pos_init), requires_grad=not freeze_direct_nm_pos)
+                self.direct_nm_neg_embed = nn.Parameter(torch.tensor(direct_nm_neg_init), requires_grad=not freeze_direct_nm_neg)
+            if use_extra_neuromodulator:
+                nm_out_size_embed = 1 if single_nm_unit else 2
+                self.neuromodulator_out_embed = nn.Linear(hidden_size, nm_out_size_embed)
 
         # Multi-neuromodulator parameters (channels 1..N-1; channel 0 = existing params)
         if multi_neuromodulator > 1:
@@ -294,7 +321,7 @@ class MLP(nn.Module):
         self.use_answer = use_answer
         self.greedy_sampling = False
 
-    def forward(self, items, plastic_weights, reward, extra_plastic_weights=None, store_embeddings=False):
+    def forward(self, items, plastic_weights, reward, extra_plastic_weights=None, store_embeddings=False, embed_plastic_weights=None, freeze_plastic=False):
         N = self.multi_neuromodulator
 
         # Normalize plastic weights to list format internally
@@ -311,7 +338,16 @@ class MLP(nn.Module):
             hidden = items
             nonlinear_item_embeddings = items
         else:
-            nonlinear_item_embeddings = self.activation(self.embedding_layer(items))
+            innate_embed = self.embedding_layer(items)
+            if self.plastic_embedding and embed_plastic_weights is not None:
+                if self.no_alpha:
+                    embed_plastic_contribution = torch.einsum('bhi,bi->bh', embed_plastic_weights, items)
+                else:
+                    embed_plastic_contribution = torch.einsum('bhi,bi->bh', self.alpha_embed * embed_plastic_weights, items)
+                pre_activation_embed = innate_embed + embed_plastic_contribution
+            else:
+                pre_activation_embed = innate_embed
+            nonlinear_item_embeddings = self.activation(pre_activation_embed)
             hidden = nonlinear_item_embeddings
         if self.add_additional_hidden_layer_pre_plastic:
             hidden = self.activation(self.pre_plastic_hidden_layer(hidden))
@@ -347,20 +383,21 @@ class MLP(nn.Module):
 
         innate_contribution = self.fc2(hidden)
 
-        # Plastic contribution: sum across all N channels
-        if self.no_alpha:
-            plastic_contribution = torch.einsum('bhi,bi->bh', pw_list[0], hidden)
-            for k in range(1, N):
-                plastic_contribution = plastic_contribution + torch.einsum('bhi,bi->bh', pw_list[k], hidden)
-        else:
-            plastic_contribution = torch.einsum('bhi,bi->bh', self.alpha * pw_list[0], hidden)
-            for k in range(1, N):
-                plastic_contribution = plastic_contribution + torch.einsum('bhi,bi->bh', self.alpha_multi[k-1] * pw_list[k], hidden)
+        if not self.disable_final_plastic:
+            # Plastic contribution: sum across all N channels
+            if self.no_alpha:
+                plastic_contribution = torch.einsum('bhi,bi->bh', pw_list[0], hidden)
+                for k in range(1, N):
+                    plastic_contribution = plastic_contribution + torch.einsum('bhi,bi->bh', pw_list[k], hidden)
+            else:
+                plastic_contribution = torch.einsum('bhi,bi->bh', self.alpha * pw_list[0], hidden)
+                for k in range(1, N):
+                    plastic_contribution = plastic_contribution + torch.einsum('bhi,bi->bh', self.alpha_multi[k-1] * pw_list[k], hidden)
 
         if self.direct_readout:
             # fc2 outputs (B, 1), plastic_contribution is (B, 1)
             # No tanh — this is the logit directly
-            final_logit = innate_contribution + plastic_contribution  # (B, 1)
+            final_logit = innate_contribution if self.disable_final_plastic else innate_contribution + plastic_contribution  # (B, 1)
             final_hidden = final_logit  # NM uses the scalar fc2 output
 
             if store_embeddings:
@@ -368,7 +405,7 @@ class MLP(nn.Module):
 
             choice = torch.sigmoid(final_logit)
         else:
-            final_pre_tanh_hidden = innate_contribution + plastic_contribution
+            final_pre_tanh_hidden = innate_contribution if self.disable_final_plastic else innate_contribution + plastic_contribution
             final_hidden = self.activation(final_pre_tanh_hidden)
 
             if self.add_additional_hidden_layer_post_plastic:
@@ -490,41 +527,76 @@ class MLP(nn.Module):
                 neuromodulators_extra = neuromodulators_final
 
             # Compute Hebbian trace once (outer product of pre/post)
-            hebbian_trace_extra_raw = torch.einsum('bh,bi->bhi', post_hidden, pre_hidden)
+            if not freeze_plastic:
+                hebbian_trace_extra_raw = torch.einsum('bh,bi->bhi', post_hidden, pre_hidden)
 
-            # Per-channel update
-            for k in range(N):
-                _trace_activated = hebbian_trace_extra_raw if self.linear_hebbian else torch.tanh(hebbian_trace_extra_raw)
-                if self.multi_neuromodulator_shared_trace or k == 0:
-                    trace_k = _trace_activated * self.hebbian_trace_multiplier_extra[i]
+                # Per-channel update
+                for k in range(N):
+                    _trace_activated = hebbian_trace_extra_raw if self.linear_hebbian else torch.tanh(hebbian_trace_extra_raw)
+                    if self.multi_neuromodulator_shared_trace or k == 0:
+                        trace_k = _trace_activated * self.hebbian_trace_multiplier_extra[i]
+                    else:
+                        trace_k = _trace_activated * self.hebbian_trace_multiplier_extra_multi[i][k-1]
+                    epw_lists[i][k] = epw_lists[i][k] + neuromodulators_extra[k] * trace_k
+                    if self.plastic_weight_clip is not None:
+                        epw_lists[i][k] = torch.clamp(epw_lists[i][k], min=-self.plastic_weight_clip, max=self.plastic_weight_clip)
+
+        # --- Embedding layer Hebbian update ---
+        if self.plastic_embedding and embed_plastic_weights is not None and not freeze_plastic:
+            # Compute NM for embedding layer
+            if self.use_extra_neuromodulator:
+                if self.direct_nm:
+                    pos_mask = (reward > 0).float()
+                    neg_mask = (reward < 0).float()
+                    nm_embed = (self.direct_nm_pos_embed * pos_mask + self.direct_nm_neg_embed * neg_mask).unsqueeze(-1)
+                elif self.simple_neuromodulator:
+                    nm_embed = self.simple_nm_weight_embed * reward
+                    if self.simple_neuromodulator_bias:
+                        nm_embed = nm_embed + self.simple_nm_bias_embed
+                    nm_embed = nm_embed.unsqueeze(-1)
                 else:
-                    trace_k = _trace_activated * self.hebbian_trace_multiplier_extra_multi[i][k-1]
-                epw_lists[i][k] = epw_lists[i][k] + neuromodulators_extra[k] * trace_k
-                if self.plastic_weight_clip is not None:
-                    epw_lists[i][k] = torch.clamp(epw_lists[i][k], min=-self.plastic_weight_clip, max=self.plastic_weight_clip)
+                    hidden_reward_combination_embed = torch.tanh(self.hidden_to_reward_embed(pre_activation_embed) + reward_embedding)
+                    nm_out_embed = torch.tanh(self.neuromodulator_out_embed(hidden_reward_combination_embed))
+                    if self.single_nm_unit:
+                        nm_embed = nm_out_embed[:, 0].unsqueeze(-1).unsqueeze(-1)
+                    else:
+                        nm_embed = (nm_out_embed[:, 0] - nm_out_embed[:, 1]).unsqueeze(-1).unsqueeze(-1)
+                    nm_embed = self.neuromodulator_multiplier_embed * nm_embed
+            else:
+                # Share final layer neuromodulator (channel 0)
+                nm_embed = neuromodulators_final[0]
+
+            # Compute Hebbian trace: outer(post_embed, pre_embed) where pre=items, post=pre_activation_embed
+            hebbian_trace_embed_raw = torch.einsum('bh,bi->bhi', pre_activation_embed, items)
+            _trace_activated_embed = hebbian_trace_embed_raw if self.linear_hebbian else torch.tanh(hebbian_trace_embed_raw)
+            trace_embed = _trace_activated_embed * self.hebbian_trace_multiplier_embed
+            embed_plastic_weights = embed_plastic_weights + nm_embed * trace_embed
+            if self.plastic_weight_clip is not None:
+                embed_plastic_weights = torch.clamp(embed_plastic_weights, min=-self.plastic_weight_clip, max=self.plastic_weight_clip)
 
         # Calculate the value for RL
         value = self.value_out(hidden)
 
         # Compute Hebbian trace for final layer
-        if self.direct_readout:
-            # Post-synaptic signal is the scalar logit (B, 1), pre-synaptic is hidden (B, hidden_size)
-            # Trace shape: (B, 1, hidden_size) — scales the hidden vector by the logit
-            trace_post = final_logit + 1 if (self.strong_antisymmetric_input_init and self.ones_readout) else final_logit
-            hebbian_trace_raw = torch.einsum('bh,bi->bhi', trace_post, hidden)
-        else:
-            hebbian_trace_raw = torch.einsum('bh,bi->bhi', final_pre_tanh_hidden, hidden)
-
-        # Per-channel update for final layer
-        _trace_activated_final = hebbian_trace_raw if self.linear_hebbian else torch.tanh(hebbian_trace_raw)
-        for k in range(N):
-            if self.multi_neuromodulator_shared_trace or k == 0:
-                trace_k = _trace_activated_final * self.hebbian_trace_multiplier
+        if not self.disable_final_plastic and not freeze_plastic:
+            if self.direct_readout:
+                # Post-synaptic signal is the scalar logit (B, 1), pre-synaptic is hidden (B, hidden_size)
+                # Trace shape: (B, 1, hidden_size) — scales the hidden vector by the logit
+                trace_post = final_logit + 1 if (self.strong_antisymmetric_input_init and self.ones_readout) else final_logit
+                hebbian_trace_raw = torch.einsum('bh,bi->bhi', trace_post, hidden)
             else:
-                trace_k = _trace_activated_final * self.hebbian_trace_multiplier_multi[k-1]
-            pw_list[k] = pw_list[k] + neuromodulators_final[k] * trace_k
-            if self.plastic_weight_clip is not None:
-                pw_list[k] = torch.clamp(pw_list[k], min=-self.plastic_weight_clip, max=self.plastic_weight_clip)
+                hebbian_trace_raw = torch.einsum('bh,bi->bhi', final_pre_tanh_hidden, hidden)
+
+            # Per-channel update for final layer
+            _trace_activated_final = hebbian_trace_raw if self.linear_hebbian else torch.tanh(hebbian_trace_raw)
+            for k in range(N):
+                if self.multi_neuromodulator_shared_trace or k == 0:
+                    trace_k = _trace_activated_final * self.hebbian_trace_multiplier
+                else:
+                    trace_k = _trace_activated_final * self.hebbian_trace_multiplier_multi[k-1]
+                pw_list[k] = pw_list[k] + neuromodulators_final[k] * trace_k
+                if self.plastic_weight_clip is not None:
+                    pw_list[k] = torch.clamp(pw_list[k], min=-self.plastic_weight_clip, max=self.plastic_weight_clip)
 
         # --- Delay steps (final layer only) ---
         # Build tracking neuromodulator from channel 0 (legacy shape for delay compatibility)
@@ -541,7 +613,7 @@ class MLP(nn.Module):
                 postactivation_hidden = hidden_reward_combination
                 prev_postactivation_hidden = final_hidden
                 for _ in range(self.delay_steps):
-                    preactivation_hidden, postactivation_hidden, prev_postactivation_hidden, pw_list, neuromodulator_delay = self.delay_step(preactivation_hidden, postactivation_hidden, prev_postactivation_hidden, pw_list)
+                    preactivation_hidden, postactivation_hidden, prev_postactivation_hidden, pw_list, neuromodulator_delay = self.delay_step(preactivation_hidden, postactivation_hidden, prev_postactivation_hidden, pw_list, freeze_plastic=freeze_plastic)
                     neuromodulator = torch.cat((neuromodulator, neuromodulator_delay), dim=-1)
 
         # Concatenate all channel NMs for tracking output
@@ -568,23 +640,25 @@ class MLP(nn.Module):
             hidden=hidden,
             extra_plastic_weights=return_epw,
             embeddings=embeddings,
+            embed_plastic_weights=embed_plastic_weights,
             reward=reward,
         )
 
-    def delay_step(self, preactivation_hidden, postactivation_hidden, prev_postactivation_hidden, pw_list):
+    def delay_step(self, preactivation_hidden, postactivation_hidden, prev_postactivation_hidden, pw_list, freeze_plastic=False):
         N = self.multi_neuromodulator
 
         # Sum all channels for forward pass
         innate_delay_contribution = self.fc2(postactivation_hidden)
-        if self.no_alpha:
-            plastic_delay_contribution = torch.einsum('bhi,bi->bh', pw_list[0], postactivation_hidden)
-            for k in range(1, N):
-                plastic_delay_contribution = plastic_delay_contribution + torch.einsum('bhi,bi->bh', pw_list[k], postactivation_hidden)
-        else:
-            plastic_delay_contribution = torch.einsum('bhi,bi->bh', self.alpha * pw_list[0], postactivation_hidden)
-            for k in range(1, N):
-                plastic_delay_contribution = plastic_delay_contribution + torch.einsum('bhi,bi->bh', self.alpha_multi[k-1] * pw_list[k], postactivation_hidden)
-        pre_tanh_hidden_delay = innate_delay_contribution + plastic_delay_contribution
+        if not self.disable_final_plastic:
+            if self.no_alpha:
+                plastic_delay_contribution = torch.einsum('bhi,bi->bh', pw_list[0], postactivation_hidden)
+                for k in range(1, N):
+                    plastic_delay_contribution = plastic_delay_contribution + torch.einsum('bhi,bi->bh', pw_list[k], postactivation_hidden)
+            else:
+                plastic_delay_contribution = torch.einsum('bhi,bi->bh', self.alpha * pw_list[0], postactivation_hidden)
+                for k in range(1, N):
+                    plastic_delay_contribution = plastic_delay_contribution + torch.einsum('bhi,bi->bh', self.alpha_multi[k-1] * pw_list[k], postactivation_hidden)
+        pre_tanh_hidden_delay = innate_delay_contribution if self.disable_final_plastic else innate_delay_contribution + plastic_delay_contribution
         hidden_delay = self.activation(pre_tanh_hidden_delay)
 
         # Compute per-channel NMs
@@ -608,18 +682,19 @@ class MLP(nn.Module):
             neuromodulators_delay.append(nm_k)
 
         # Compute Hebbian trace once
-        hebbian_trace_delay_raw = torch.einsum('bh,bi->bhi', preactivation_hidden, prev_postactivation_hidden)
+        if not self.disable_final_plastic and not freeze_plastic:
+            hebbian_trace_delay_raw = torch.einsum('bh,bi->bhi', preactivation_hidden, prev_postactivation_hidden)
 
-        # Per-channel update
-        _trace_activated_delay = hebbian_trace_delay_raw if self.linear_hebbian else torch.tanh(hebbian_trace_delay_raw)
-        for k in range(N):
-            if self.multi_neuromodulator_shared_trace or k == 0:
-                trace_k = _trace_activated_delay * self.hebbian_trace_multiplier
-            else:
-                trace_k = _trace_activated_delay * self.hebbian_trace_multiplier_multi[k-1]
-            pw_list[k] = pw_list[k] + neuromodulators_delay[k] * trace_k
-            if self.plastic_weight_clip is not None:
-                pw_list[k] = torch.clamp(pw_list[k], min=-self.plastic_weight_clip, max=self.plastic_weight_clip)
+            # Per-channel update
+            _trace_activated_delay = hebbian_trace_delay_raw if self.linear_hebbian else torch.tanh(hebbian_trace_delay_raw)
+            for k in range(N):
+                if self.multi_neuromodulator_shared_trace or k == 0:
+                    trace_k = _trace_activated_delay * self.hebbian_trace_multiplier
+                else:
+                    trace_k = _trace_activated_delay * self.hebbian_trace_multiplier_multi[k-1]
+                pw_list[k] = pw_list[k] + neuromodulators_delay[k] * trace_k
+                if self.plastic_weight_clip is not None:
+                    pw_list[k] = torch.clamp(pw_list[k], min=-self.plastic_weight_clip, max=self.plastic_weight_clip)
 
         # Concatenate channel 0 NM for tracking (legacy shape)
         neuromodulator_delay = neuromodulators_delay[0]
@@ -627,7 +702,7 @@ class MLP(nn.Module):
         return pre_tanh_hidden_delay, hidden_delay, postactivation_hidden, pw_list, neuromodulator_delay
 
 
-def create_plastic_weights(batch_size, hidden_size, extra_layers, multi_neuromodulator, device, direct_readout=False, first_plastic_input_size=None):
+def create_plastic_weights(batch_size, hidden_size, extra_layers, multi_neuromodulator, device, direct_readout=False, first_plastic_input_size=None, plastic_embedding=False, input_size=None):
     """Create plastic weights for the model.
 
     When multi_neuromodulator=1 (default), returns legacy format:
@@ -636,6 +711,8 @@ def create_plastic_weights(batch_size, hidden_size, extra_layers, multi_neuromod
     When multi_neuromodulator>1, returns list format:
         pw: list of N (B, H, H) tensors (or (B, 1, H) if direct_readout)
         epw: list of N-element lists, each containing (B, H, H) tensors
+
+    Also returns embed_pw (B, hidden_size, input_size) if plastic_embedding=True, else None.
 
     first_plastic_input_size: input dimension of the first plastic layer.
         Defaults to hidden_size if not specified.
@@ -646,17 +723,22 @@ def create_plastic_weights(batch_size, hidden_size, extra_layers, multi_neuromod
     # fc2_input_size: if extra_layers > 0, last extra layer outputs hidden_size; else first_plastic_input_size
     fc2_input_size = hidden_size if extra_layers > 0 else first_plastic_input_size
     final_pw_shape = (batch_size, 1, fc2_input_size) if direct_readout else (batch_size, hidden_size, fc2_input_size)
+
+    embed_pw = None
+    if plastic_embedding and input_size is not None:
+        embed_pw = torch.zeros(batch_size, hidden_size, input_size, dtype=torch.float32, requires_grad=False).to(device)
+
     if N == 1:
         pw = torch.zeros(*final_pw_shape, dtype=torch.float32, requires_grad=False).to(device)
         epw = [torch.zeros(batch_size, hidden_size, first_plastic_input_size if i == 0 else hidden_size, dtype=torch.float32, requires_grad=False).to(device) for i in range(extra_layers)]
-        return pw, epw
+        return pw, epw, embed_pw
     else:
         pw = [torch.zeros(*final_pw_shape, dtype=torch.float32, requires_grad=False).to(device) for _ in range(N)]
         epw = [[torch.zeros(batch_size, hidden_size, first_plastic_input_size if i == 0 else hidden_size, dtype=torch.float32, requires_grad=False).to(device) for _ in range(N)] for i in range(extra_layers)]
-        return pw, epw
+        return pw, epw, embed_pw
 
 
-def detach_plastic_weights(pw, epw, multi_neuromodulator):
+def detach_plastic_weights(pw, epw, multi_neuromodulator, embed_pw=None):
     """Detach plastic weights between episodes."""
     N = multi_neuromodulator
     if N == 1:
@@ -665,10 +747,12 @@ def detach_plastic_weights(pw, epw, multi_neuromodulator):
     else:
         pw = [pw[k].detach() for k in range(N)]
         epw = [[epw[i][k].detach() for k in range(N)] for i in range(len(epw))]
-    return pw, epw
+    if embed_pw is not None:
+        embed_pw = embed_pw.detach()
+    return pw, epw, embed_pw
 
 
-def clone_plastic_weights(pw, epw):
+def clone_plastic_weights(pw, epw, embed_pw=None):
     """Deep clone plastic weights. Auto-detects single-tensor vs list format."""
     if isinstance(pw, list):
         cloned_pw = [p.clone() for p in pw]
@@ -676,7 +760,8 @@ def clone_plastic_weights(pw, epw):
     else:
         cloned_pw = pw.clone()
         cloned_epw = [e.clone() for e in epw]
-    return cloned_pw, cloned_epw
+    cloned_embed_pw = embed_pw.clone() if embed_pw is not None else None
+    return cloned_pw, cloned_epw, cloned_embed_pw
 
 
 def pw_batch_size(pw):
@@ -686,7 +771,7 @@ def pw_batch_size(pw):
     return pw.shape[0]
 
 
-def repeat_interleave_pw(pw, epw, repeats):
+def repeat_interleave_pw(pw, epw, repeats, embed_pw=None):
     """Repeat-interleave plastic weights along batch dim. Auto-detects format."""
     if isinstance(pw, list):
         ri_pw = [p.repeat_interleave(repeats, dim=0) for p in pw]
@@ -694,7 +779,8 @@ def repeat_interleave_pw(pw, epw, repeats):
     else:
         ri_pw = pw.repeat_interleave(repeats, dim=0)
         ri_epw = [e.repeat_interleave(repeats, dim=0) for e in epw]
-    return ri_pw, ri_epw
+    ri_embed_pw = embed_pw.repeat_interleave(repeats, dim=0) if embed_pw is not None else None
+    return ri_pw, ri_epw, ri_embed_pw
 
 
 def zero_plastic_weights(pw, epw=None):

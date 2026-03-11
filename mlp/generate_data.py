@@ -70,7 +70,7 @@ def generate_cross_list_trial(list_1_items, list_2_items):
     item_pair, choice = generate_pair(item_1, item_2)
     return item_pair, choice, [high_item_index, low_item_index]
 
-def generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials, arbitrary=False, mass_presentation=0):
+def generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials, arbitrary=False, mass_presentation=0, exhaustive_test=False):
     """
     Generate TI training and test trials.
 
@@ -144,14 +144,32 @@ def generate_batch_trials_ti(batch_items, num_train_trials, num_test_trials, arb
                 batch_pair_indices.append(trial_pair_indices)
 
         # === Generate test trials ===
-        for _ in range(num_test_trials):
-            if arbitrary:
-                item_pair, choice, trial_pair_indices = generate_trial_arbitrary(items)
-            else:
-                item_pair, choice, trial_pair_indices = generate_trial(items, is_test=True)
-            batch_trials.append(item_pair)
-            batch_correct_choices.append(choice)
-            batch_pair_indices.append(trial_pair_indices)
+        if exhaustive_test:
+            # Generate all N*(N-1) ordered pairs exactly once
+            test_trials_buf = []
+            for i in range(num_items):
+                for j in range(num_items):
+                    if i == j:
+                        continue
+                    item_pair = np.concatenate([items[i], items[j]], axis=0)
+                    # i on left, j on right. Correct choice: 0 if i ranks higher (i < j), 1 if j ranks higher (i > j)
+                    choice = 0 if i < j else 1
+                    test_trials_buf.append((item_pair, choice, [min(i, j), max(i, j)]))
+            # Shuffle test trials
+            np.random.shuffle(test_trials_buf)
+            for item_pair, choice, trial_pair_indices in test_trials_buf:
+                batch_trials.append(item_pair)
+                batch_correct_choices.append(choice)
+                batch_pair_indices.append(trial_pair_indices)
+        else:
+            for _ in range(num_test_trials):
+                if arbitrary:
+                    item_pair, choice, trial_pair_indices = generate_trial_arbitrary(items)
+                else:
+                    item_pair, choice, trial_pair_indices = generate_trial(items, is_test=True)
+                batch_trials.append(item_pair)
+                batch_correct_choices.append(choice)
+                batch_pair_indices.append(trial_pair_indices)
 
         trials.append(np.array(batch_trials))
         correct_choices.append(np.array(batch_correct_choices))

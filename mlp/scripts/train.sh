@@ -34,7 +34,7 @@ python main.py \
     --output_dir /gpfs/radev/pi/dijk/dfl32/3factor/outputs \
     --checkpoint_dir /gpfs/radev/pi/dijk/dfl32/3factor/checkpoints \
     --save_every 5000 \
-    --hidden_size 30 \
+    --hidden_size 200 \
     --extra_layers 0 \
     --full_eval_interval 1000 \
     --num_episodes 2000000 \
@@ -66,18 +66,12 @@ python main.py \
     --ll_zero_shot \
     --skip_length_generalization \
     --skip_mass_presentation \
-    --scalar_alpha_layers 1 \
-    --freeze_alpha_layers 1 \
     --freeze_neuromodulator_multiplier \
     --freeze_hebbian_trace_multiplier \
-    --linear_hebbian \
-    --no_bias_layers 1 \
-    --direct_readout \
-    --linear_activation \
-    --ones_readout \
-    --direct_nm \
-    --direct_nm_pos_init 0.0 \
-    --direct_nm_neg_init -1.0 
-    
+    --no_bias_layers 0 1 \
+    --no_readout_bias \
+    --single_nm_unit \
+    --freeze_plastic_during_test \
+    --exhaustive_test_pairs
     
 

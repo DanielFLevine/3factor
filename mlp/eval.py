@@ -49,7 +49,7 @@ def full_eval_ll(args, model):
         batch_end = min((batch_num + 1) * args.batch_size, args.full_eval_batch_size)
         batch_items = all_batch_items[batch_start:batch_end]
         batch_size = batch_items.shape[0]
-        plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
         trials, correct_choices, pair_indices = generate_batch_trials_ll(batch_items, args.num_trials_list_1, args.num_trials_list_2, args.num_trials_linking_pair, 1, put_linking_trials_first=args.put_linking_trials_first, randomize_list_order=args.randomize_list_order)
 
@@ -63,10 +63,12 @@ def full_eval_ll(args, model):
 
             trial_input = batch_trial
 
+            freeze_plastic = getattr(args, 'freeze_plastic_during_test', False) and trial >= num_train_trials
             with torch.inference_mode():
-                output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights)
+                output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw, freeze_plastic=freeze_plastic)
             plastic_weights = output.plastic_weights
             extra_plastic_weights = output.extra_plastic_weights
+            embed_pw = output.embed_plastic_weights
 
             if torch.isnan(output.choice).any() or (output.choice < 0).any() or (output.choice > 1).any():
                 logger.info(f"Trial {trial}: choice has invalid values - min={output.choice.min()}, max={output.choice.max()}, nan={torch.isnan(output.choice).sum()}")
@@ -107,7 +109,7 @@ def full_eval_ti(args, model):
         batch_end = min((batch_num + 1) * args.batch_size, args.full_eval_batch_size)
         batch_items = all_batch_items[batch_start:batch_end]
         batch_size = batch_items.shape[0]
-        plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
         # Generate trials: num_train_trials training trials + 1 test trial
         trials, correct_choices, pair_indices, num_train_trials = generate_batch_trials_ti(batch_items, args.num_train_trials, 1, arbitrary=args.arbitrary)
@@ -121,10 +123,12 @@ def full_eval_ti(args, model):
 
             trial_input = batch_trial
 
+            freeze_plastic = getattr(args, 'freeze_plastic_during_test', False) and trial >= num_train_trials
             with torch.inference_mode():
-                output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights)
+                output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw, freeze_plastic=freeze_plastic)
             plastic_weights = output.plastic_weights
             extra_plastic_weights = output.extra_plastic_weights
+            embed_pw = output.embed_plastic_weights
 
             if torch.isnan(output.choice).any() or (output.choice < 0).any() or (output.choice > 1).any():
                 logger.info(f"Trial {trial}: choice has invalid values - min={output.choice.min()}, max={output.choice.max()}, nan={torch.isnan(output.choice).sum()}")
@@ -188,7 +192,7 @@ def full_eval_ai(args, model):
         batch_end = min((batch_num + 1) * args.batch_size, args.full_eval_batch_size)
         batch_items = all_batch_items[batch_start:batch_end]
         batch_size = batch_items.shape[0]
-        plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
         # Generate trials with only 1 test trial
         trials, correct_choices, pair_indices, num_train_trials = generate_batch_trials_ai(
@@ -207,10 +211,12 @@ def full_eval_ai(args, model):
 
             trial_input = batch_trial
 
+            freeze_plastic = getattr(args, 'freeze_plastic_during_test', False) and trial >= num_train_trials
             with torch.inference_mode():
-                output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights)
+                output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw, freeze_plastic=freeze_plastic)
             plastic_weights = output.plastic_weights
             extra_plastic_weights = output.extra_plastic_weights
+            embed_pw = output.embed_plastic_weights
 
             if torch.isnan(output.choice).any() or (output.choice < 0).any() or (output.choice > 1).any():
                 logger.info(f"Trial {trial}: choice has invalid values - min={output.choice.min()}, max={output.choice.max()}, nan={torch.isnan(output.choice).sum()}")
@@ -280,7 +286,7 @@ def more_items_generalization_test(args, model):
         extended_num_train_trials = base_num_train_trials + 2 * i
 
         # Initialize plastic weights
-        plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
         # Generate batch items (different items per network)
         batch_items = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=True)
@@ -300,16 +306,17 @@ def more_items_generalization_test(args, model):
 
             with torch.inference_mode():
                 output = model(batch_trial, plastic_weights, batch_correct_choice,
-                              extra_plastic_weights=extra_plastic_weights)
+                              extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
             plastic_weights = output.plastic_weights
             extra_plastic_weights = output.extra_plastic_weights
+            embed_pw = output.embed_plastic_weights
 
         # Freeze weights and do zero-shot evaluation on all pairs
-        frozen_pw, frozen_epw = clone_plastic_weights(plastic_weights, extra_plastic_weights)
+        frozen_pw, frozen_epw, frozen_embed_pw = clone_plastic_weights(plastic_weights, extra_plastic_weights, embed_pw=embed_pw)
 
         # Returns dict of {(i, j): [list of 0/1 correctness]}
         zero_shot_trials = _evaluate_all_pairs_zero_shot_variable_items(
-            args, model, batch_items, frozen_pw, frozen_epw, device, num_items
+            args, model, batch_items, frozen_pw, frozen_epw, device, num_items, frozen_embed_pw=frozen_embed_pw
         )
         plot_zero_shot_accuracies[num_items] = zero_shot_trials
 
@@ -345,7 +352,7 @@ def more_items_generalization_test(args, model):
     return length_generalization_logging_dict, symbolic_distance_figs
 
 
-def _evaluate_all_pairs_zero_shot_variable_items(args, model, batch_items, frozen_pw, frozen_epw, device, num_items):
+def _evaluate_all_pairs_zero_shot_variable_items(args, model, batch_items, frozen_pw, frozen_epw, device, num_items, frozen_embed_pw=None):
     """
     Evaluate zero-shot accuracy on all possible pairs with frozen plastic weights.
     Similar to _evaluate_all_pairs_zero_shot but takes num_items as parameter.
@@ -370,7 +377,7 @@ def _evaluate_all_pairs_zero_shot_variable_items(args, model, batch_items, froze
 
             with torch.inference_mode():
                 output = model(trial_input, frozen_pw, correct_choice,
-                              extra_plastic_weights=frozen_epw, store_embeddings=False)
+                              extra_plastic_weights=frozen_epw, store_embeddings=False, embed_plastic_weights=frozen_embed_pw)
 
             choice_sampled = output.sampled_choices.squeeze(-1)
             correct_mask = (choice_sampled == correct_choice).cpu().numpy()
@@ -417,7 +424,7 @@ def mass_presentation_test(args, model):
     zero_shot_accuracies = {}
 
     # Initialize plastic weights once
-    plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+    plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
     # Generate batch items (different items per network for robust averaging)
     batch_items = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=True)
@@ -445,9 +452,10 @@ def mass_presentation_test(args, model):
 
         with torch.inference_mode():
             output = model(batch_trial, plastic_weights, batch_correct_choice,
-                          extra_plastic_weights=extra_plastic_weights)
+                          extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
         plastic_weights = output.plastic_weights
         extra_plastic_weights = output.extra_plastic_weights
+        embed_pw = output.embed_plastic_weights
 
         # Track neuromodulator
         if args.extra_layers > 0:
@@ -470,9 +478,10 @@ def mass_presentation_test(args, model):
 
         with torch.inference_mode():
             output = model(batch_trial, plastic_weights, batch_correct_choice,
-                          extra_plastic_weights=extra_plastic_weights)
+                          extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
         plastic_weights = output.plastic_weights
         extra_plastic_weights = output.extra_plastic_weights
+        embed_pw = output.embed_plastic_weights
 
         # Track neuromodulator
         if args.extra_layers > 0:
@@ -487,11 +496,11 @@ def mass_presentation_test(args, model):
         mass_count = mass_trial + 1  # 1-indexed count
         if current_checkpoint_idx < len(checkpoint_counts) and mass_count == checkpoint_counts[current_checkpoint_idx]:
             # Freeze weights and do zero-shot evaluation on all pairs
-            frozen_pw, frozen_epw = clone_plastic_weights(plastic_weights, extra_plastic_weights)
+            frozen_pw, frozen_epw, frozen_embed_pw = clone_plastic_weights(plastic_weights, extra_plastic_weights, embed_pw=embed_pw)
 
             # Returns dict of {(i, j): [list of 0/1 correctness]}
             zero_shot_trials = _evaluate_all_pairs_zero_shot(
-                args, model, batch_items, frozen_pw, frozen_epw, device
+                args, model, batch_items, frozen_pw, frozen_epw, device, frozen_embed_pw=frozen_embed_pw
             )
             zero_shot_accuracies[mass_count] = zero_shot_trials
 
@@ -572,7 +581,7 @@ def mass_presentation_test(args, model):
     return mass_presentation_logging_dict, symbolic_distance_figs, neuromodulator_fig
 
 
-def _evaluate_all_pairs_zero_shot(args, model, batch_items, frozen_pw, frozen_epw, device):
+def _evaluate_all_pairs_zero_shot(args, model, batch_items, frozen_pw, frozen_epw, device, frozen_embed_pw=None):
     """
     Evaluate zero-shot accuracy on all possible pairs with frozen plastic weights.
 
@@ -601,7 +610,7 @@ def _evaluate_all_pairs_zero_shot(args, model, batch_items, frozen_pw, frozen_ep
 
             with torch.inference_mode():
                 output = model(trial_input, frozen_pw, correct_choice,
-                              extra_plastic_weights=frozen_epw, store_embeddings=False)
+                              extra_plastic_weights=frozen_epw, store_embeddings=False, embed_plastic_weights=frozen_embed_pw)
 
             choice_sampled = output.sampled_choices.squeeze(-1)
             correct_mask = (choice_sampled == correct_choice).cpu().numpy()
@@ -632,7 +641,7 @@ def new_items_old_items_test(args, model):
     batch_size = args.batch_size
     item_size = args.item_size
 
-    plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+    plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
     batch_items_old = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=args.change_items_throughout_batch)
     batch_items_new = generate_batch_items(num_items, item_size, batch_size, change_items_throughout_batch=args.change_items_throughout_batch)
@@ -684,9 +693,10 @@ def new_items_old_items_test(args, model):
         trial_input = batch_trial
 
         with torch.inference_mode():
-            output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights)
+            output = model(trial_input, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
         plastic_weights = output.plastic_weights
         extra_plastic_weights = output.extra_plastic_weights
+        embed_pw = output.embed_plastic_weights
 
         if args.extra_layers > 0:
             nm_data = output.neuromodulator.detach().cpu().numpy()
@@ -992,7 +1002,7 @@ def eval_controlled_order_ll(args, model, num_networks=128, num_trials_per_pair=
             ('enriched', enriched_items, False)
         ]:
             batch_size = batch_items.shape[0]
-            plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+            plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
             trials, correct_choices, _ = generate_controlled_order_trials_ll(
                 batch_items, num_trials_per_pair, degenerate_order=degenerate_order,
@@ -1011,10 +1021,11 @@ def eval_controlled_order_ll(args, model, num_networks=128, num_trials_per_pair=
 
                 with torch.inference_mode():
                     output = model(batch_trial, plastic_weights, batch_correct_choice,
-                                  extra_plastic_weights=extra_plastic_weights)
+                                  extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
 
                 plastic_weights = output.plastic_weights
                 extra_plastic_weights = output.extra_plastic_weights
+                embed_pw = output.embed_plastic_weights
 
                 # Check test trial (last trial)
                 if trial_idx == num_trials - 1:
@@ -1075,7 +1086,7 @@ def plastic_weight_ablation_ll(args, model):
             batch_size = batch_items.shape[0]
 
             # Initialize plastic weights (always start at zero)
-            plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+            plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
             trials, correct_choices, pair_indices = generate_batch_trials_ll(
                 batch_items, args.num_trials_list_1, args.num_trials_list_2, args.num_trials_linking_pair, 1,
@@ -1092,13 +1103,14 @@ def plastic_weight_ablation_ll(args, model):
                 batch_correct_choice = correct_choices_t[:, trial]
 
                 with torch.inference_mode():
-                    output = model(batch_trial, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights)
+                    output = model(batch_trial, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
 
                 # Only update weights that are not ablated
                 if update_final_pw:
                     plastic_weights = output.plastic_weights
                 if update_extra_pw:
                     extra_plastic_weights = output.extra_plastic_weights
+                embed_pw = output.embed_plastic_weights
 
             # Evaluate on test trial
             test_trial = trials[:, num_train_trials, :]
@@ -1106,7 +1118,7 @@ def plastic_weight_ablation_ll(args, model):
             test_pair_indices = pair_indices[:, num_train_trials]
 
             with torch.inference_mode():
-                output = model(test_trial, plastic_weights, test_correct_choice, extra_plastic_weights=extra_plastic_weights)
+                output = model(test_trial, plastic_weights, test_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
 
             choice_sampled = output.sampled_choices.squeeze(-1)
             for episode in range(batch_size):
@@ -1162,7 +1174,7 @@ def plastic_weight_ablation_ti(args, model):
             batch_size = batch_items.shape[0]
 
             # Initialize plastic weights (always start at zero)
-            plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+            plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
             # Generate TI trials - use num_test_trials=1 for a single zero-shot test
             trials, correct_choices, pair_indices, num_train_trials = generate_batch_trials_ti(
@@ -1178,13 +1190,14 @@ def plastic_weight_ablation_ti(args, model):
                 batch_correct_choice = correct_choices_t[:, trial]
 
                 with torch.inference_mode():
-                    output = model(batch_trial, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights)
+                    output = model(batch_trial, plastic_weights, batch_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
 
                 # Only update weights that are not ablated
                 if update_final_pw:
                     plastic_weights = output.plastic_weights
                 if update_extra_pw:
                     extra_plastic_weights = output.extra_plastic_weights
+                embed_pw = output.embed_plastic_weights
 
             # Evaluate on test trial
             test_trial = trials[:, num_train_trials, :]
@@ -1192,7 +1205,7 @@ def plastic_weight_ablation_ti(args, model):
             test_pair_indices = pair_indices[:, num_train_trials]
 
             with torch.inference_mode():
-                output = model(test_trial, plastic_weights, test_correct_choice, extra_plastic_weights=extra_plastic_weights)
+                output = model(test_trial, plastic_weights, test_correct_choice, extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
 
             choice_sampled = output.sampled_choices.squeeze(-1)
             for episode in range(batch_size):
@@ -1435,7 +1448,7 @@ def _continual_eval_ti_ai(args, model, device, num_networks, ti_first=True):
         batch_size = batch_end - batch_start
 
         # Initialize plastic weights
-        plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
         # Generate items for both tasks
         batch_items_ti = generate_batch_items(num_items_ti, args.item_size, batch_size, change_items_throughout_batch=True)
@@ -1476,11 +1489,11 @@ def _continual_eval_ti_ai(args, model, device, num_networks, ti_first=True):
             )
 
         # Freeze weights and evaluate both tasks
-        frozen_pw, frozen_epw = clone_plastic_weights(plastic_weights, extra_plastic_weights)
+        frozen_pw, frozen_epw, frozen_embed_pw = clone_plastic_weights(plastic_weights, extra_plastic_weights, embed_pw=embed_pw)
 
         # Evaluate TI zero-shot
         ti_results = _evaluate_all_pairs_zero_shot_with_items(
-            model, batch_items_ti, frozen_pw, frozen_epw, device, num_items_ti
+            model, batch_items_ti, frozen_pw, frozen_epw, device, num_items_ti, frozen_embed_pw=frozen_embed_pw
         )
         for key, values in ti_results.items():
             ti_zero_shot_trials[key].extend(values)
@@ -1488,7 +1501,7 @@ def _continual_eval_ti_ai(args, model, device, num_networks, ti_first=True):
         # Evaluate AI zero-shot
         ai_results = _evaluate_all_pairs_zero_shot_ai(
             model, batch_items_ai, frozen_pw, frozen_epw, device, num_groups, num_items_per_group,
-            exclude_same_item=args.ai_exclude_same_item
+            exclude_same_item=args.ai_exclude_same_item, frozen_embed_pw=frozen_embed_pw
         )
         for key, values in ai_results.items():
             ai_zero_shot_trials[key].extend(values)
@@ -1533,7 +1546,7 @@ def _continual_eval_ll_ai(args, model, device, num_networks, ll_first=True):
         batch_size = batch_end - batch_start
 
         # Initialize plastic weights
-        plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
         # Generate items for both tasks
         batch_items_ll = generate_batch_items(num_items_ll, args.item_size, batch_size, change_items_throughout_batch=True)
@@ -1577,11 +1590,11 @@ def _continual_eval_ll_ai(args, model, device, num_networks, ll_first=True):
             )
 
         # Freeze weights and evaluate both tasks
-        frozen_pw, frozen_epw = clone_plastic_weights(plastic_weights, extra_plastic_weights)
+        frozen_pw, frozen_epw, frozen_embed_pw = clone_plastic_weights(plastic_weights, extra_plastic_weights, embed_pw=embed_pw)
 
         # Evaluate LL zero-shot
         ll_results = _evaluate_all_pairs_zero_shot_with_items(
-            model, batch_items_ll, frozen_pw, frozen_epw, device, num_items_ll
+            model, batch_items_ll, frozen_pw, frozen_epw, device, num_items_ll, frozen_embed_pw=frozen_embed_pw
         )
         for key, values in ll_results.items():
             ll_zero_shot_trials[key].extend(values)
@@ -1589,7 +1602,7 @@ def _continual_eval_ll_ai(args, model, device, num_networks, ll_first=True):
         # Evaluate AI zero-shot
         ai_results = _evaluate_all_pairs_zero_shot_ai(
             model, batch_items_ai, frozen_pw, frozen_epw, device, num_groups, num_items_per_group,
-            exclude_same_item=args.ai_exclude_same_item
+            exclude_same_item=args.ai_exclude_same_item, frozen_embed_pw=frozen_embed_pw
         )
         for key, values in ai_results.items():
             ai_zero_shot_trials[key].extend(values)
@@ -1617,14 +1630,15 @@ def _run_training_trials(model, trials, correct_choices, plastic_weights, extra_
 
         with torch.inference_mode():
             output = model(batch_trial, plastic_weights, batch_correct_choice,
-                          extra_plastic_weights=extra_plastic_weights)
+                          extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
         plastic_weights = output.plastic_weights
         extra_plastic_weights = output.extra_plastic_weights
+        embed_pw = output.embed_plastic_weights
 
     return plastic_weights, extra_plastic_weights
 
 
-def _evaluate_all_pairs_zero_shot_with_items(model, batch_items, frozen_pw, frozen_epw, device, num_items):
+def _evaluate_all_pairs_zero_shot_with_items(model, batch_items, frozen_pw, frozen_epw, device, num_items, frozen_embed_pw=None):
     """
     Evaluate zero-shot accuracy on all possible pairs with frozen plastic weights.
     Similar to _evaluate_all_pairs_zero_shot but takes batch_items and num_items as parameters.
@@ -1649,7 +1663,7 @@ def _evaluate_all_pairs_zero_shot_with_items(model, batch_items, frozen_pw, froz
 
             with torch.inference_mode():
                 output = model(trial_input, frozen_pw, correct_choice,
-                              extra_plastic_weights=frozen_epw, store_embeddings=False)
+                              extra_plastic_weights=frozen_epw, store_embeddings=False, embed_plastic_weights=frozen_embed_pw)
 
             choice_sampled = output.sampled_choices.squeeze(-1)
             correct_mask = (choice_sampled == correct_choice).cpu().numpy()
@@ -1671,7 +1685,7 @@ def _evaluate_all_pairs_zero_shot_with_items(model, batch_items, frozen_pw, froz
     return zero_shot_trials
 
 
-def _evaluate_all_pairs_zero_shot_ai(model, batch_items, frozen_pw, frozen_epw, device, num_groups, num_items_per_group, exclude_same_item=False):
+def _evaluate_all_pairs_zero_shot_ai(model, batch_items, frozen_pw, frozen_epw, device, num_groups, num_items_per_group, exclude_same_item=False, frozen_embed_pw=None):
     """
     Evaluate zero-shot accuracy on all possible AI pairs with frozen plastic weights.
 
@@ -1711,7 +1725,7 @@ def _evaluate_all_pairs_zero_shot_ai(model, batch_items, frozen_pw, frozen_epw, 
 
                     with torch.inference_mode():
                         output = model(trial_input, frozen_pw, correct_choice,
-                                      extra_plastic_weights=frozen_epw, store_embeddings=False)
+                                      extra_plastic_weights=frozen_epw, store_embeddings=False, embed_plastic_weights=frozen_embed_pw)
 
                     choice_sampled = output.sampled_choices.squeeze(-1)
                     correct_mask = (choice_sampled == correct_choice).cpu().numpy()
@@ -1770,7 +1784,7 @@ def ai_generalization_test(args, model, additional_groups=3, additional_items_pe
             logger.info(f"AI generalization test: {num_groups} groups × {num_items_per_group} items/group")
 
             # Initialize plastic weights
-            plastic_weights, extra_plastic_weights = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size))
+            plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(batch_size, args.hidden_size, args.extra_layers, getattr(args, 'multi_neuromodulator', 1), device, direct_readout=getattr(args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', args.hidden_size), plastic_embedding=getattr(args, 'plastic_embedding', False), input_size=2*args.item_size)
 
             # Generate batch items (different items per network)
             batch_items = generate_batch_items_ai(
@@ -1794,17 +1808,18 @@ def ai_generalization_test(args, model, additional_groups=3, additional_items_pe
 
                 with torch.inference_mode():
                     output = model(batch_trial, plastic_weights, batch_correct_choice,
-                                  extra_plastic_weights=extra_plastic_weights)
+                                  extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
                 plastic_weights = output.plastic_weights
                 extra_plastic_weights = output.extra_plastic_weights
+                embed_pw = output.embed_plastic_weights
 
             # Freeze weights and do zero-shot evaluation on all pairs
-            frozen_pw, frozen_epw = clone_plastic_weights(plastic_weights, extra_plastic_weights)
+            frozen_pw, frozen_epw, frozen_embed_pw = clone_plastic_weights(plastic_weights, extra_plastic_weights, embed_pw=embed_pw)
 
             # Evaluate all pairs
             zero_shot_trials = _evaluate_all_pairs_zero_shot_ai(
                 model, batch_items, frozen_pw, frozen_epw, device, num_groups, num_items_per_group,
-                exclude_same_item=args.ai_exclude_same_item
+                exclude_same_item=args.ai_exclude_same_item, frozen_embed_pw=frozen_embed_pw
             )
 
             # Compute accuracies

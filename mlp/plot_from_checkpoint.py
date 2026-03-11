@@ -57,7 +57,7 @@ def compute_item_readout_correlations(model, items, plastic_weights, extra_plast
 
         with torch.inference_mode():
             out_pos1 = model(tensor_pos1, plastic_weights, dummy_reward,
-                             extra_plastic_weights=extra_plastic_weights, store_embeddings=True)
+                             extra_plastic_weights=extra_plastic_weights, store_embeddings=True, embed_plastic_weights=embed_pw)
         emb_pos1 = out_pos1.embeddings[final_layer_idx][0].detach().cpu().numpy()
 
         if np.std(emb_pos1) > 1e-10:
@@ -69,7 +69,7 @@ def compute_item_readout_correlations(model, items, plastic_weights, extra_plast
 
         with torch.inference_mode():
             out_pos2 = model(tensor_pos2, plastic_weights, dummy_reward,
-                             extra_plastic_weights=extra_plastic_weights, store_embeddings=True)
+                             extra_plastic_weights=extra_plastic_weights, store_embeddings=True, embed_plastic_weights=embed_pw)
         emb_pos2 = out_pos2.embeddings[final_layer_idx][0].detach().cpu().numpy()
 
         if np.std(emb_pos2) > 1e-10:
@@ -105,7 +105,7 @@ def compute_item_logits(model, items, plastic_weights, extra_plastic_weights, de
 
             with torch.inference_mode():
                 out = model(tensor, plastic_weights, dummy_reward,
-                            extra_plastic_weights=extra_plastic_weights)
+                            extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
             prob = out.choice.squeeze().item()
             prob = np.clip(prob, 1e-7, 1 - 1e-7)
             logits_arr[item_idx] = np.log(prob / (1 - prob))
@@ -284,13 +284,13 @@ def compute_batch_item_logits_fast(model, batch_items, plastic_weights, extra_pl
             all_inputs.append(np.concatenate([zeros, item]))   # pos2
 
     batch_input = torch.tensor(np.stack(all_inputs), dtype=torch.float32).to(device)
-    batch_pw, batch_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, items_per_net)
+    batch_pw, batch_epw, batch_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, items_per_net, embed_pw=embed_pw)
     batch_reward = torch.zeros(total_batch, dtype=torch.float32).to(device)
 
     store_embs = return_embeddings_at_layers is not None
     with torch.inference_mode():
         out = model(batch_input, batch_pw, batch_reward, extra_plastic_weights=batch_epw,
-                    store_embeddings=store_embs)
+                    store_embeddings=store_embs, embed_plastic_weights=batch_embed_pw)
 
     probs = out.choice.squeeze(-1).detach().cpu().numpy()
     probs = np.clip(probs, 1e-7, 1 - 1e-7)
@@ -326,7 +326,7 @@ def compute_adjacent_pair_logits(model, items, plastic_weights, extra_plastic_we
 
             with torch.inference_mode():
                 out = model(pair_tensor, plastic_weights, dummy_reward,
-                            extra_plastic_weights=extra_plastic_weights)
+                            extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
             prob = out.choice.squeeze().item()
             prob = np.clip(prob, 1e-7, 1 - 1e-7)
             logits.append(np.log(prob / (1 - prob)))
@@ -354,7 +354,7 @@ def run_simulation(model, batch_items, saved_args, num_train_trials, num_network
     correct_choices_t = torch.tensor(correct_choices, dtype=torch.float32).to(device)
 
     # Initialize plastic weights
-    plastic_weights, extra_plastic_weights = create_plastic_weights(num_networks, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size))
+    plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(num_networks, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size), plastic_embedding=getattr(saved_args, 'plastic_embedding', False), input_size=2*saved_args.item_size)
 
     all_corrs = {net_idx: [] for net_idx in range(num_networks)}
     trial_labels = {net_idx: [] for net_idx in range(num_networks)}
@@ -401,9 +401,10 @@ def run_simulation(model, batch_items, saved_args, num_train_trials, num_network
         batch_correct = correct_choices_t[:, trial_idx]
         with torch.inference_mode():
             output = model(batch_trial, plastic_weights, batch_correct,
-                          extra_plastic_weights=extra_plastic_weights)
+                          extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
         plastic_weights = output.plastic_weights
         extra_plastic_weights = output.extra_plastic_weights
+        embed_pw = output.embed_plastic_weights
 
         nm = output.neuromodulator.detach().cpu().numpy()
         choice_prob = output.choice.squeeze(-1).detach().cpu().numpy()
@@ -572,7 +573,7 @@ def run_aggregate_delta_analysis(model, saved_args, num_episodes, num_train_tria
         trials_t = torch.tensor(trials, dtype=torch.float32).to(device)
         correct_choices_t = torch.tensor(correct_choices, dtype=torch.float32).to(device)
 
-        plastic_weights, extra_plastic_weights = create_plastic_weights(current_batch_size, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(current_batch_size, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size), plastic_embedding=getattr(saved_args, 'plastic_embedding', False), input_size=2*saved_args.item_size)
 
         # Pre-training item logits (and embeddings if extra layers exist)
         if extra_layer_indices:
@@ -595,12 +596,12 @@ def run_aggregate_delta_analysis(model, saved_args, num_episodes, num_train_tria
                 all_pair_inputs_train.append(np.concatenate([batch_items[net_idx][i+1], batch_items[net_idx][i]]))
         pair_input_tensor = torch.tensor(np.stack(all_pair_inputs_train), dtype=torch.float32).to(device)
 
-        pair_pw_init, pair_epw_init = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs)
+        pair_pw_init, pair_epw_init, pair_embed_pw_init = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs, embed_pw=embed_pw)
         pair_rew_init = torch.zeros(len(all_pair_inputs_train), dtype=torch.float32).to(device)
         with torch.inference_mode():
             pair_out_init = model(pair_input_tensor, pair_pw_init, pair_rew_init,
                                  extra_plastic_weights=pair_epw_init,
-                                 store_embeddings=True)
+                                 store_embeddings=True, embed_plastic_weights=embed_pw)
         # Extract initial pair logits
         init_pair_probs = pair_out_init.choice.squeeze(-1).detach().cpu().numpy()
         init_pair_probs = np.clip(init_pair_probs, 1e-7, 1 - 1e-7)
@@ -647,7 +648,7 @@ def run_aggregate_delta_analysis(model, saved_args, num_episodes, num_train_tria
             with torch.inference_mode():
                 output = model(batch_trial, plastic_weights, batch_correct,
                               extra_plastic_weights=extra_plastic_weights,
-                              store_embeddings=True)
+                              store_embeddings=True, embed_plastic_weights=embed_pw)
             plastic_weights = output.plastic_weights
             extra_plastic_weights = output.extra_plastic_weights
 
@@ -686,7 +687,7 @@ def run_aggregate_delta_analysis(model, saved_args, num_episodes, num_train_tria
             with torch.inference_mode():
                 post_output = model(batch_trial, plastic_weights, dummy_reward,
                                    extra_plastic_weights=extra_plastic_weights,
-                                   store_embeddings=True)
+                                   store_embeddings=True, embed_plastic_weights=embed_pw)
 
             # Compute dot product deltas at extra layers
             if extra_layer_indices:
@@ -716,12 +717,12 @@ def run_aggregate_delta_analysis(model, saved_args, num_episodes, num_train_tria
                                 dot_abs_pos2[li][trial_idx][pair_idx][reward_key].append(dot_post[net_idx].copy())
 
             # Compute new pair logits (and embeddings if extra layers) for all 14 pair types
-            new_pair_pw, new_pair_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs)
+            new_pair_pw, new_pair_epw, new_pair_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs, embed_pw=embed_pw)
             pair_rew = torch.zeros(current_batch_size * num_adj_pairs, dtype=torch.float32).to(device)
             with torch.inference_mode():
                 new_pair_out = model(pair_input_tensor, new_pair_pw, pair_rew,
                                     extra_plastic_weights=new_pair_epw,
-                                    store_embeddings=True)
+                                    store_embeddings=True, embed_plastic_weights=embed_pw)
 
             # Extract pair logits and compute delta/abs
             new_pair_probs = new_pair_out.choice.squeeze(-1).detach().cpu().numpy()
@@ -871,12 +872,12 @@ def run_aggregate_delta_analysis(model, saved_args, num_episodes, num_train_tria
                 all_pair_inputs.append(np.concatenate([batch_items[net_idx][i+1], batch_items[net_idx][i]]))
 
         pair_tensor = torch.tensor(np.stack(all_pair_inputs), dtype=torch.float32).to(device)
-        pair_pw, pair_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs)
+        pair_pw, pair_epw, pair_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs, embed_pw=embed_pw)
         pair_reward = torch.zeros(len(all_pair_inputs), dtype=torch.float32).to(device)
 
         with torch.inference_mode():
             pair_output = model(pair_tensor, pair_pw, pair_reward,
-                               extra_plastic_weights=pair_epw, store_embeddings=True)
+                               extra_plastic_weights=pair_epw, store_embeddings=True, embed_plastic_weights=pair_embed_pw)
 
         # Extract post-training logits per trial type
         pair_probs = pair_output.choice.squeeze(-1).detach().cpu().numpy()
@@ -946,12 +947,12 @@ def run_aggregate_delta_analysis(model, saved_args, num_episodes, num_train_tria
                     all_nonadj_inputs.append(np.concatenate([batch_items[net_idx][j], batch_items[net_idx][i]]))
 
         nonadj_tensor = torch.tensor(np.stack(all_nonadj_inputs), dtype=torch.float32).to(device)
-        nonadj_pw, nonadj_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_nonadj_pairs)
+        nonadj_pw, nonadj_epw, nonadj_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_nonadj_pairs, embed_pw=embed_pw)
         nonadj_reward = torch.zeros(len(all_nonadj_inputs), dtype=torch.float32).to(device)
 
         with torch.inference_mode():
             nonadj_output = model(nonadj_tensor, nonadj_pw, nonadj_reward,
-                                  extra_plastic_weights=nonadj_epw, store_embeddings=True)
+                                  extra_plastic_weights=nonadj_epw, store_embeddings=True, embed_plastic_weights=nonadj_embed_pw)
 
         # Extract nonadjacent logits
         nonadj_probs = nonadj_output.choice.squeeze(-1).detach().cpu().numpy()
@@ -1127,19 +1128,19 @@ def run_aggregate_zero_shot(model, saved_args, num_episodes, num_train_trials, n
         trials_t = torch.tensor(trials, dtype=torch.float32).to(device)
         correct_choices_t = torch.tensor(correct_choices, dtype=torch.float32).to(device)
 
-        plastic_weights, extra_plastic_weights = create_plastic_weights(current_batch_size, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(current_batch_size, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size), plastic_embedding=getattr(saved_args, 'plastic_embedding', False), input_size=2*saved_args.item_size)
 
         # Training phase
         for trial_idx in range(actual_num_trials):
             if needs_override:
-                saved_pw, saved_epw = clone_plastic_weights(plastic_weights, extra_plastic_weights)
+                saved_pw, saved_epw, saved_embed_pw = clone_plastic_weights(plastic_weights, extra_plastic_weights, embed_pw=embed_pw)
 
             batch_trial = trials_t[:, trial_idx, :]
             batch_correct = correct_choices_t[:, trial_idx]
             with torch.inference_mode():
                 output = model(batch_trial, plastic_weights, batch_correct,
-                              extra_plastic_weights=extra_plastic_weights)
-            plastic_weights, extra_plastic_weights = clone_plastic_weights(output.plastic_weights, output.extra_plastic_weights)
+                              extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
+            plastic_weights, extra_plastic_weights, embed_pw = clone_plastic_weights(output.plastic_weights, output.extra_plastic_weights, embed_pw=output.embed_plastic_weights)
 
             if needs_override:
                 sampled = output.sampled_choices.squeeze(-1).detach().cpu().numpy()
@@ -1207,11 +1208,11 @@ def run_aggregate_zero_shot(model, saved_args, num_episodes, num_train_trials, n
                     pair_info.append((net_idx, i, j, 1))
 
         test_tensor = torch.tensor(np.stack(all_test_inputs), dtype=torch.float32).to(device)
-        test_pw, test_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net)
+        test_pw, test_epw, test_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net, embed_pw=embed_pw)
         test_reward = torch.zeros(len(all_test_inputs), dtype=torch.float32).to(device)
 
         with torch.inference_mode():
-            test_output = model(test_tensor, test_pw, test_reward, extra_plastic_weights=test_epw)
+            test_output = model(test_tensor, test_pw, test_reward, extra_plastic_weights=test_epw, embed_plastic_weights=test_embed_pw)
 
         sampled_choices = test_output.sampled_choices.squeeze(-1).detach().cpu().numpy()
         for k, (net_idx, i, j, correct_choice) in enumerate(pair_info):
@@ -1251,11 +1252,13 @@ def run_aggregate_zero_shot_ll(model, saved_args, num_episodes, num_items, devic
         trials_t = torch.tensor(trials, dtype=torch.float32).to(device)
         correct_choices_t = torch.tensor(correct_choices, dtype=torch.float32).to(device)
 
-        plastic_weights, extra_plastic_weights = create_plastic_weights(
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(
             current_batch_size, saved_args.hidden_size, saved_args.extra_layers,
             getattr(saved_args, 'multi_neuromodulator', 1), device,
             direct_readout=getattr(saved_args, 'direct_readout', False),
-            first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size)
+            first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size),
+            plastic_embedding=getattr(saved_args, 'plastic_embedding', False),
+            input_size=2*saved_args.item_size
         )
 
         # Training phase
@@ -1264,8 +1267,8 @@ def run_aggregate_zero_shot_ll(model, saved_args, num_episodes, num_items, devic
             batch_correct = correct_choices_t[:, trial_idx]
             with torch.inference_mode():
                 output = model(batch_trial, plastic_weights, batch_correct,
-                              extra_plastic_weights=extra_plastic_weights)
-            plastic_weights, extra_plastic_weights = clone_plastic_weights(output.plastic_weights, output.extra_plastic_weights)
+                              extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
+            plastic_weights, extra_plastic_weights, embed_pw = clone_plastic_weights(output.plastic_weights, output.extra_plastic_weights, embed_pw=output.embed_plastic_weights)
 
         # Zero-shot test phase: test all pairs in both orderings
         num_test_per_net = num_pairs * 2
@@ -1280,11 +1283,11 @@ def run_aggregate_zero_shot_ll(model, saved_args, num_episodes, num_items, devic
                     pair_info.append((net_idx, i, j, 1))
 
         test_tensor = torch.tensor(np.stack(all_test_inputs), dtype=torch.float32).to(device)
-        test_pw, test_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net)
+        test_pw, test_epw, test_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net, embed_pw=embed_pw)
         test_reward = torch.zeros(len(all_test_inputs), dtype=torch.float32).to(device)
 
         with torch.inference_mode():
-            test_output = model(test_tensor, test_pw, test_reward, extra_plastic_weights=test_epw)
+            test_output = model(test_tensor, test_pw, test_reward, extra_plastic_weights=test_epw, embed_plastic_weights=test_embed_pw)
 
         sampled_choices = test_output.sampled_choices.squeeze(-1).detach().cpu().numpy()
         for k, (net_idx, i, j, correct_choice) in enumerate(pair_info):
@@ -1328,11 +1331,13 @@ def run_zero_shot_with_activations(model, saved_args, num_episodes, num_train_tr
         trials_t = torch.tensor(trials, dtype=torch.float32).to(device)
         correct_choices_t = torch.tensor(correct_choices, dtype=torch.float32).to(device)
 
-        plastic_weights, extra_plastic_weights = create_plastic_weights(
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(
             current_batch_size, saved_args.hidden_size, saved_args.extra_layers,
             getattr(saved_args, 'multi_neuromodulator', 1), device,
             direct_readout=getattr(saved_args, 'direct_readout', False),
-            first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size)
+            first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size),
+            plastic_embedding=getattr(saved_args, 'plastic_embedding', False),
+            input_size=2*saved_args.item_size
         )
 
         # Training phase
@@ -1341,9 +1346,9 @@ def run_zero_shot_with_activations(model, saved_args, num_episodes, num_train_tr
             batch_correct = correct_choices_t[:, trial_idx]
             with torch.inference_mode():
                 output = model(batch_trial, plastic_weights, batch_correct,
-                              extra_plastic_weights=extra_plastic_weights)
-            plastic_weights, extra_plastic_weights = clone_plastic_weights(
-                output.plastic_weights, output.extra_plastic_weights
+                              extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
+            plastic_weights, extra_plastic_weights, embed_pw = clone_plastic_weights(
+                output.plastic_weights, output.extra_plastic_weights, embed_pw=output.embed_plastic_weights
             )
 
         # Test phase: all pairs in both orderings, with embeddings
@@ -1359,12 +1364,12 @@ def run_zero_shot_with_activations(model, saved_args, num_episodes, num_train_tr
                     pair_info.append((net_idx, i, j, 1))
 
         test_tensor = torch.tensor(np.stack(all_test_inputs), dtype=torch.float32).to(device)
-        test_pw, test_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net)
+        test_pw, test_epw, test_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net, embed_pw=embed_pw)
         test_reward = torch.zeros(len(all_test_inputs), dtype=torch.float32).to(device)
 
         with torch.inference_mode():
             test_output = model(test_tensor, test_pw, test_reward,
-                                extra_plastic_weights=test_epw, store_embeddings=True)
+                                extra_plastic_weights=test_epw, store_embeddings=True, embed_plastic_weights=test_embed_pw)
 
         # Record zero-shot accuracy
         sampled_choices = test_output.sampled_choices.squeeze(-1).detach().cpu().numpy()
@@ -1547,7 +1552,7 @@ def run_controlled_zero_shot(model, saved_args, num_episodes, num_items, device,
             if store_dot_embeddings:
                 item_dot_embeddings = {L: [[] for _ in range(num_trials + 1)] for L in dot_layers}
 
-        plastic_weights, extra_plastic_weights = create_plastic_weights(current_batch_size, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size))
+        plastic_weights, extra_plastic_weights, embed_pw = create_plastic_weights(current_batch_size, saved_args.hidden_size, saved_args.extra_layers, getattr(saved_args, 'multi_neuromodulator', 1), device, direct_readout=getattr(saved_args, 'direct_readout', False), first_plastic_input_size=getattr(model, 'first_plastic_input_size', saved_args.hidden_size), plastic_embedding=getattr(saved_args, 'plastic_embedding', False), input_size=2*saved_args.item_size)
 
         # Helper to probe item dots at requested layers and accumulate into slot_idx
         def _probe_item_dots(pw, epw, slot_idx):
@@ -1573,20 +1578,20 @@ def run_controlled_zero_shot(model, saved_args, num_episodes, num_items, device,
         # Training phase
         for trial_idx in range(num_trials):
             if needs_override:
-                saved_pw, saved_epw = clone_plastic_weights(plastic_weights, extra_plastic_weights)
+                saved_pw, saved_epw, saved_embed_pw = clone_plastic_weights(plastic_weights, extra_plastic_weights, embed_pw=embed_pw)
 
             batch_trial = trials_t[:, trial_idx, :]
             batch_correct = correct_choices_t[:, trial_idx]
             with torch.inference_mode():
                 output = model(batch_trial, plastic_weights, batch_correct,
-                              extra_plastic_weights=extra_plastic_weights)
+                              extra_plastic_weights=extra_plastic_weights, embed_plastic_weights=embed_pw)
             # Track per-trial accuracy
             sampled = output.sampled_choices.squeeze(-1).detach().cpu().numpy()
             correct = correct_choices[:, trial_idx]
             trial_correct_counts[trial_idx] += np.sum(sampled == correct)
             trial_total_counts[trial_idx] += current_batch_size
 
-            plastic_weights, extra_plastic_weights = clone_plastic_weights(output.plastic_weights, output.extra_plastic_weights)
+            plastic_weights, extra_plastic_weights, embed_pw = clone_plastic_weights(output.plastic_weights, output.extra_plastic_weights, embed_pw=output.embed_plastic_weights)
 
             if needs_override:
                 rewards = 2.0 * (sampled == correct).astype(np.float64) - 1.0
@@ -1626,11 +1631,11 @@ def run_controlled_zero_shot(model, saved_args, num_episodes, num_items, device,
 
             # Probe all adjacent pair logits after this training trial
             if probe_pair_logits:
-                probe_pw, probe_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs)
+                probe_pw, probe_epw, probe_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_adj_pairs, embed_pw=embed_pw)
                 probe_rew = torch.zeros(current_batch_size * num_adj_pairs, dtype=torch.float32).to(device)
                 with torch.inference_mode():
                     probe_out = model(pair_input_tensor, probe_pw, probe_rew,
-                                     extra_plastic_weights=probe_epw)
+                                     extra_plastic_weights=probe_epw, embed_plastic_weights=probe_embed_pw)
                 probe_probs = probe_out.choice.squeeze(-1).detach().cpu().numpy()
                 probe_probs = np.clip(probe_probs, 1e-7, 1 - 1e-7)
                 probe_logits = np.log(probe_probs / (1 - probe_probs)).reshape(current_batch_size, num_adj_pairs)
@@ -1639,11 +1644,11 @@ def run_controlled_zero_shot(model, saved_args, num_episodes, num_items, device,
                 pair_logit_counts[trial_idx] += current_batch_size
 
                 # Probe ALL pairs (adjacent + nonadjacent)
-                all_probe_pw, all_probe_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_all_pairs)
+                all_probe_pw, all_probe_epw, all_probe_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_all_pairs, embed_pw=embed_pw)
                 all_probe_rew = torch.zeros(current_batch_size * num_all_pairs, dtype=torch.float32).to(device)
                 with torch.inference_mode():
                     all_probe_out = model(all_pair_input_tensor, all_probe_pw, all_probe_rew,
-                                         extra_plastic_weights=all_probe_epw)
+                                         extra_plastic_weights=all_probe_epw, embed_plastic_weights=all_probe_embed_pw)
                 all_probe_probs = all_probe_out.choice.squeeze(-1).detach().cpu().numpy()
                 all_probe_probs = np.clip(all_probe_probs, 1e-7, 1 - 1e-7)
                 all_probe_logits = np.log(all_probe_probs / (1 - all_probe_probs)).reshape(current_batch_size, num_all_pairs)
@@ -1689,11 +1694,11 @@ def run_controlled_zero_shot(model, saved_args, num_episodes, num_items, device,
                     pair_info.append((net_idx, i, j, 1))
 
         test_tensor = torch.tensor(np.stack(all_test_inputs), dtype=torch.float32).to(device)
-        test_pw, test_epw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net)
+        test_pw, test_epw, test_embed_pw = repeat_interleave_pw(plastic_weights, extra_plastic_weights, num_test_per_net, embed_pw=embed_pw)
         test_reward = torch.zeros(len(all_test_inputs), dtype=torch.float32).to(device)
 
         with torch.inference_mode():
-            test_output = model(test_tensor, test_pw, test_reward, extra_plastic_weights=test_epw)
+            test_output = model(test_tensor, test_pw, test_reward, extra_plastic_weights=test_epw, embed_plastic_weights=test_embed_pw)
 
         sampled_choices = test_output.sampled_choices.squeeze(-1).detach().cpu().numpy()
         for k, (net_idx, i, j, correct_choice) in enumerate(pair_info):
@@ -4603,7 +4608,7 @@ def create_figures(all_corrs, trial_labels, nm_values, logit_values, reward_valu
 
             with torch.inference_mode():
                 out = model(pair_tensor, zero_pw, dummy_reward,
-                            extra_plastic_weights=zero_epw, store_embeddings=True)
+                            extra_plastic_weights=zero_epw, store_embeddings=True, embed_plastic_weights=None)
             embeddings.append(out.embeddings[0][0].detach().cpu().numpy())
 
         emb_matrix = np.stack(embeddings)
@@ -4740,15 +4745,20 @@ def run_pca_frozen_pc1_analysis(model, saved_args, num_episodes, num_train_trial
         epw = [torch.zeros(current_batch, saved_args.hidden_size, saved_args.hidden_size,
                            dtype=torch.float32, requires_grad=False).to(device)
                for _ in range(saved_args.extra_layers)]
+        embed_pw_local = None
+        if getattr(saved_args, 'plastic_embedding', False):
+            embed_pw_local = torch.zeros(current_batch, saved_args.hidden_size, 2 * saved_args.item_size,
+                                         dtype=torch.float32, requires_grad=False).to(device)
 
         # Run training trials to build plastic weights
         num_trials = trials_t.shape[1]
         with torch.no_grad():
             for trial_idx in range(num_trials):
                 output = model(trials_t[:, trial_idx, :], pw, correct_choices_t[:, trial_idx],
-                              extra_plastic_weights=epw)
+                              extra_plastic_weights=epw, embed_plastic_weights=embed_pw_local)
                 pw = output.plastic_weights
                 epw = output.extra_plastic_weights
+                embed_pw_local = output.embed_plastic_weights
 
         # Manual forward pass for each network (matching pca_frozen exactly)
         for net_idx in range(current_batch):
@@ -4925,6 +4935,9 @@ def main():
         direct_nm=getattr(saved_args, 'direct_nm', False),
         direct_nm_pos_init=getattr(saved_args, 'direct_nm_pos_init', 0.0),
         direct_nm_neg_init=getattr(saved_args, 'direct_nm_neg_init', -1.0),
+        plastic_embedding=getattr(saved_args, 'plastic_embedding', False),
+        disable_final_plastic=getattr(saved_args, 'disable_final_plastic', False),
+        no_readout_bias=getattr(saved_args, 'no_readout_bias', False),
     ).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.greedy_sampling = saved_args.greedy_sampling
